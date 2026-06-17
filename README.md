@@ -49,9 +49,9 @@ Control the daemon and modify settings using the CLI client (`cli.py`).
 ./cli.py status      # View current daemon state, loaded config, and active wallpaper
 ./cli.py shortcuts   # Generate KDE desktop entries for global keyboard shortcuts(again, does not work)
 ```
-**rest can be viewed with cli.py --help**
-**for now, the `./cli.py` needs to be run from the project directory but of course there are a lot of ways to make this
-** - more simple.. like using an alias, or treat the python file as a binary that can be executed( for example `/usr/local/bin`)**
+**rest can be viewed with `cli.py --help`**
+**for now, the `./cli.py` needs to be run from the project directory but of course there are a lot of ways to make this**
+**- more simple.. like using an alias, or treat the python file as a binary that can be executed( for example `/usr/local/bin`)**
 **and such, you're on a Linux distro, go do stuff :)**
 
 **Configuration Mutation:**
