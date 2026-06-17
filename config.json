@@ -1,0 +1,15 @@
+{
+    "active_plugin": "local_folder",
+    "plugins": {
+        "local_folder": {
+            "path": "~/Pictures/Wallpapers",
+            "order": "sequential"
+        }
+    },
+    "settings": {
+        "interval_seconds": 600,
+        "scale_mode": "fill",
+        "border_color": "#000000",
+        "show_notifications": false
+    }
+}
