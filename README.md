@@ -29,7 +29,7 @@ Muzwall operates on a decoupled Client-Daemon architecture to  rotate desktop ba
 Clone the repository and run the installation script. This will generate and enable a `systemd` user service.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/muzwall.git
+git clone https://github.com/alexantSWE/muzzwall.git
 cd muzwall
 chmod +x daemon.py cli.py install_service.py
 python3 install_service.py
@@ -50,6 +50,9 @@ Control the daemon and modify settings using the CLI client (`cli.py`).
 ./cli.py shortcuts   # Generate KDE desktop entries for global keyboard shortcuts(again, does not work)
 ```
 **rest can be viewed with cli.py --help**
+**for now, the `./cli.py` needs to be run from the project directory but of course there are a lot of ways to make this
+** - more simple.. like using an alias, or treat the python file as a binary that can be executed( for example `/usr/local/bin`)**
+**and such, you're on a Linux distro, go do stuff :)**
 
 **Configuration Mutation:**
 Settings are hot-reloaded by the daemon on the next tick.
