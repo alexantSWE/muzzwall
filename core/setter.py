@@ -69,6 +69,26 @@ class KDEWallpaperSetter:
         return {}
 
     @staticmethod
+    def set_accent_color_from_wallpaper(enable: bool):
+        """Toggles KDE Plasma's native Accent Color from Wallpaper setting."""
+        val = "true" if enable else "false"
+        
+        # Try Plasma 6 first
+        try:
+            subprocess.run(["kwriteconfig6", "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+            
+        # Fallback to Plasma 5
+        try:
+            subprocess.run(["kwriteconfig5", "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
+            return True
+        except Exception as e:
+            print(f"⚠️ Failed to update KDE accent color settings: {e}")
+            return False
+
+    @staticmethod
     def get_backup_path() -> str:
         return os.path.expanduser("~/.config/muzwall_backup.json")
 
