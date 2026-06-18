@@ -81,6 +81,7 @@ def show_status():
         interval = config.get("settings", {}).get("interval_seconds", "Unknown")
         notifs = config.get("settings", {}).get("show_notifications", False)
         unique = config.get("settings", {}).get("unique_wallpapers", False)
+        accent = config.get("settings", {}).get("accent_sync", False)
         proxy = config.get("settings", {}).get("proxy", "None")
         
         print(f"\n=== Configuration ===")
@@ -88,6 +89,7 @@ def show_status():
         print(f"⏱️  Interval      : {interval} seconds")
         print(f"🔔 Notifications : {'ON' if notifs else 'OFF'}")
         print(f"🔀 Unique Screens: {'ON' if unique else 'OFF'} (Multi-Monitor/Activity)")
+        print(f"🎨 Accent Sync   : {'ON' if accent else 'OFF'}")
         print(f"🌐 Proxy         : {proxy}")
         print(f"{'⏸️  Rotation      : PAUSED' if is_paused else '▶️  Rotation      : ACTIVE'}")
         
@@ -155,6 +157,11 @@ def handle_config(args):
         val = args.unique.lower() == "true"
         config.setdefault("settings", {})["unique_wallpapers"] = val
         print(f"✅ Set unique_wallpapers to {val}.")
+        updated = True
+    if args.accent is not None:
+        val = args.accent.lower() == "true"
+        config.setdefault("settings", {})["accent_sync"] = val
+        print(f"✅ Set KDE Accent Sync to {val}.")
         updated = True
     if args.proxy is not None:
         if args.proxy.lower() == "none":
@@ -319,6 +326,7 @@ def main():
     parser_config.add_argument("--unique", type=str, choices=["true", "false"], help="Enable/disable unique wallpapers for multi-monitor/activities")
     parser_config.add_argument("--persist", type=str, choices=["true", "false"], help="Enable/disable remembering history across reboots")
     parser_config.add_argument("--proxy", type=str, help="Set HTTP/HTTPS proxy (e.g., http://127.0.0.1:10809) or 'none' to clear")
+    parser_config.add_argument("--accent", type=str, choices=["true", "false"], help="Enable/disable KDE native Accent Color from wallpaper")
     # Wallhaven Plugin Config
     parser_config.add_argument("--wh-query", type=str, help="Wallhaven search query (e.g., 'cyberpunk', 'nature')")
     parser_config.add_argument("--wh-categories", type=str, help="Wallhaven categories (e.g., 111 for All, 010 for Anime)")

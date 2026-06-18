@@ -107,6 +107,7 @@ def main():
 
     current_plugin_name = None
     current_plugin_settings = None
+    current_accent_sync = None
     source = None
     
     try:
@@ -121,6 +122,12 @@ def main():
             interval = settings.get("interval_seconds", 60)
             scale_mode = settings.get("scale_mode", "fit")
             border_color = settings.get("border_color", "#000000")
+            accent_sync = settings.get("accent_sync", False)
+
+            # Apply KDE Accent sync if it changed in config
+            if current_accent_sync != accent_sync:
+                KDEWallpaperSetter.set_accent_color_from_wallpaper(accent_sync)
+                current_accent_sync = accent_sync
 
             # Re-initialize plugin ONLY if config changed
             plugin_name = config.get("active_plugin", "local_folder")
