@@ -45,13 +45,15 @@ def send_signal_and_wait(signal_name):
                             print(f"✅ {msg}")
                         elif msg_type == "warning":
                             print(f"⚠️ {msg}")
+                        elif msg_type == "info":
+                            print(f"ℹ️ {msg}")
                         else:
                             print(f"❌ {msg}")
                         return
             except Exception:
                 pass
                 
-    print("⏳ Daemon received the signal but took too long to respond.")
+    print("⏳ Signal sent! The daemon is working in the background (check './cli.py logs' for progress).")
 
 def send_signal(signal_name):
     """Uses systemd to send a specific signal to our daemon."""
@@ -79,15 +81,18 @@ def show_status():
         interval = config.get("settings", {}).get("interval_seconds", "Unknown")
         notifs = config.get("settings", {}).get("show_notifications", False)
         unique = config.get("settings", {}).get("unique_wallpapers", False)
+        proxy = config.get("settings", {}).get("proxy", "None")
         
         print(f"\n=== Configuration ===")
         print(f"🔌 Active Plugin : {active_plugin}")
         print(f"⏱️  Interval      : {interval} seconds")
         print(f"🔔 Notifications : {'ON' if notifs else 'OFF'}")
         print(f"🔀 Unique Screens: {'ON' if unique else 'OFF'} (Multi-Monitor/Activity)")
+        print(f"🌐 Proxy         : {proxy}")
         print(f"{'⏸️  Rotation      : PAUSED' if is_paused else '▶️  Rotation      : ACTIVE'}")
         
-        if active_plugin == "local_folder":
+        normalized_plugin = active_plugin.lower().replace("_", "")
+        if normalized_plugin == "localfolder":
             folder = config.get("plugins", {}).get("local_folder", {}).get("path", "Unknown")
             order = config.get("plugins", {}).get("local_folder", {}).get("order", "Unknown")
             recursive = config.get("plugins", {}).get("local_folder", {}).get("recursive", False)
@@ -95,7 +100,7 @@ def show_status():
             print(f"🔀 Order         : {order}")
             print(f"📂 Recursive Scan: {'ON' if recursive else 'OFF'}")
 
-        elif active_plugin == "wallhaven":
+        elif normalized_plugin == "wallhaven":
             wh = config.get("plugins", {}).get("wallhaven", {})
             print(f"🔍 Search Query : {wh.get('query', 'Any')}")
             print(f"🏷️  Categories   : {wh.get('categories', '111')} (General/Anime/People)")
@@ -150,6 +155,14 @@ def handle_config(args):
         val = args.unique.lower() == "true"
         config.setdefault("settings", {})["unique_wallpapers"] = val
         print(f"✅ Set unique_wallpapers to {val}.")
+        updated = True
+    if args.proxy is not None:
+        if args.proxy.lower() == "none":
+            config.setdefault("settings", {}).pop("proxy", None)
+            print("✅ Cleared proxy settings.")
+        else:
+            config.setdefault("settings", {})["proxy"] = args.proxy
+            print(f"✅ Set global proxy to '{args.proxy}'.")
         updated = True
     if args.plugin is not None:
         config["active_plugin"] = args.plugin
@@ -305,6 +318,7 @@ def main():
     parser_config.add_argument("--recursive", type=str, choices=["true", "false"], help="Enable/disable recursive folder scanning")
     parser_config.add_argument("--unique", type=str, choices=["true", "false"], help="Enable/disable unique wallpapers for multi-monitor/activities")
     parser_config.add_argument("--persist", type=str, choices=["true", "false"], help="Enable/disable remembering history across reboots")
+    parser_config.add_argument("--proxy", type=str, help="Set HTTP/HTTPS proxy (e.g., http://127.0.0.1:10809) or 'none' to clear")
     # Wallhaven Plugin Config
     parser_config.add_argument("--wh-query", type=str, help="Wallhaven search query (e.g., 'cyberpunk', 'nature')")
     parser_config.add_argument("--wh-categories", type=str, help="Wallhaven categories (e.g., 111 for All, 010 for Anime)")

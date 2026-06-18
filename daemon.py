@@ -61,8 +61,10 @@ from typing import Optional
 
 def get_plugin_instance(config) -> Optional[WallpaperSource]:
     plugin_name = config.get("active_plugin", "local_folder")
+    # Normalize name so 'localfolder' and 'local_folder' are treated equally
+    normalized_name = plugin_name.lower().replace("_", "")
     
-    if plugin_name == "local_folder":
+    if normalized_name == "localfolder":
         plugin_config = config.get("plugins", {}).get("local_folder", {})
         folder_path = plugin_config.get("path", "~/Pictures")
         order = plugin_config.get("order", "random")
@@ -70,7 +72,7 @@ def get_plugin_instance(config) -> Optional[WallpaperSource]:
         persist = plugin_config.get("persist_history", True)
         return LocalFolderSource(folder_path, order, recursive, persist)
         
-    elif plugin_name == "wallhaven":
+    elif normalized_name == "wallhaven":
         plugin_config = config.get("plugins", {}).get("wallhaven", {})
         query = plugin_config.get("query", "")
         categories = plugin_config.get("categories", "111")
@@ -132,6 +134,8 @@ def main():
             if source:
                 global action_requested
                 current_action = action_requested
+                # Clear it immediately so we only abort if a NEW signal comes in!
+                action_requested = None 
                 
                 from core.config import CONFIG_PATH
                 config_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
@@ -153,18 +157,21 @@ def main():
                 
                 # Fetch based on action
                 if current_action == "prev":
+                    KDEWallpaperSetter.write_status("Fetching previous wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_prev(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
                         KDEWallpaperSetter.write_status("At beginning of history.", "warning")
                 elif current_action == "next":
+                    KDEWallpaperSetter.write_status("Fetching next wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
                         KDEWallpaperSetter.write_status("No valid images found.", "error")
                 elif current_action is None and not is_paused:
+                    KDEWallpaperSetter.write_status("Auto-rotating wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
@@ -200,10 +207,10 @@ def main():
                     else:
                         KDEWallpaperSetter.write_status("Failed to apply KDE wallpaper.", "error", next_images[0] if next_images else "")
             else:
-                print("No valid plugin configured.")
-
-            # Reset action before sleeping
-            action_requested = None
+                print(f"No valid plugin configured for: {plugin_name}")
+                if current_action:
+                    # Let the CLI know immediately instead of making it hang/timeout
+                    KDEWallpaperSetter.write_status(f"Invalid plugin: {plugin_name}", "error")
 
             # Sleep in 0.2s increments
             sleep_ticks = int(interval * 5)
