@@ -70,7 +70,7 @@ class LocalFolderSource(WallpaperSource):
                     
         return sorted(images)
 
-    def fetch_next(self) -> Optional[str]:
+    def fetch_next(self, abort_check=None) -> Optional[str]:
         images = self._get_valid_images()
         if not images: return None
 
