@@ -156,7 +156,7 @@ def handle_config(args):
         print(f"✅ Set active_plugin to '{args.plugin}'.")
         updated = True
         
-    if args.folder is not None or args.order is not None or args.recursive is not None:
+    if any(a is not None for a in [args.folder, args.order, args.recursive, args.persist]):
         local_cfg = config.setdefault("plugins", {}).setdefault("local_folder", {})
         if args.folder is not None:
             local_cfg["path"] = args.folder
@@ -176,8 +176,9 @@ def handle_config(args):
             local_cfg["persist_history"] = val
             print(f"✅ Set persist_history to {val}.")
             updated = True
-        if any(a is not None for a in [args.wh_query, args.wh_categories, args.wh_purity, args.wh_sorting, args.wh_apikey, args.wh_maxsize]):
-            wh_cfg = config.setdefault("plugins", {}).setdefault("wallhaven", {})
+
+    if any(a is not None for a in [args.wh_query, args.wh_categories, args.wh_purity, args.wh_sorting, args.wh_apikey, args.wh_maxsize]):
+        wh_cfg = config.setdefault("plugins", {}).setdefault("wallhaven", {})
         if args.wh_query is not None:
             wh_cfg["query"] = args.wh_query
             print(f"✅ Set Wallhaven query to '{args.wh_query}'.")
@@ -202,6 +203,7 @@ def handle_config(args):
             wh_cfg["max_size_mb"] = args.wh_maxsize
             print(f"✅ Set Wallhaven max size to {args.wh_maxsize} MB.")
             updated = True
+
     if updated: ConfigManager.save(config); print("\nConfiguration saved!")
     else: print("Current Configuration:\n" + json.dumps(config, indent=4))
 
@@ -345,7 +347,11 @@ def main():
         print("Muzwall daemon restarted.")
     elif args.command == "logs":
         try:
-            subprocess.run(["journalctl", "--user", "-u", "muzwall.service", "-f", "-n", "20"])
+            log_file = os.path.expanduser("~/.cache/muzwall/muzwall.log")
+            if os.path.exists(log_file):
+                subprocess.run(["tail", "-f", "-n", "50", log_file])
+            else:
+                print("No log file found. Is the daemon running?")
         except KeyboardInterrupt:
             pass # Gracefully exit logs tail
 

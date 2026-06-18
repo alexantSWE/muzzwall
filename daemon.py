@@ -4,6 +4,27 @@ import signal
 import sys
 import os
 import subprocess
+
+LOG_FILE = os.path.expanduser("~/.cache/muzwall/muzwall.log")
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+class LoggerWriter:
+    def __init__(self, level):
+        self.level = level
+        self.log_file = open(LOG_FILE, "a", buffering=1)
+        
+    def write(self, message):
+        if message.strip():
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            for line in message.strip().split('\n'):
+                self.log_file.write(f"[{timestamp}] {line}\n")
+            
+    def flush(self):
+        self.log_file.flush()
+
+sys.stdout = LoggerWriter("INFO")
+sys.stderr = LoggerWriter("ERROR")
+
 from core.setter import KDEWallpaperSetter
 from core.config import ConfigManager
 from plugins.local_folder import LocalFolderSource
@@ -35,8 +56,10 @@ def handle_prev_signal(signum, frame):
 
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource 
+from core.wallpaper import WallpaperSource
+from typing import Optional
 
-def get_plugin_instance(config):
+def get_plugin_instance(config) -> Optional[WallpaperSource]:
     plugin_name = config.get("active_plugin", "local_folder")
     
     if plugin_name == "local_folder":
@@ -110,6 +133,17 @@ def main():
                 global action_requested
                 current_action = action_requested
                 
+                from core.config import CONFIG_PATH
+                config_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
+
+                def should_abort():
+                    if action_requested:
+                        return True
+                    current_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
+                    if current_mtime > config_mtime:
+                        return True
+                    return False
+                
                 # Check locks and settings
                 is_paused = os.path.exists(os.path.expanduser("~/.config/muzwall.pause"))
                 is_unique = settings.get("unique_wallpapers", False)
@@ -120,19 +154,19 @@ def main():
                 # Fetch based on action
                 if current_action == "prev":
                     for _ in range(fetch_count):
-                        img = source.fetch_prev()
+                        img = source.fetch_prev(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
                         KDEWallpaperSetter.write_status("At beginning of history.", "warning")
                 elif current_action == "next":
                     for _ in range(fetch_count):
-                        img = source.fetch_next()
+                        img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
                         KDEWallpaperSetter.write_status("No valid images found.", "error")
                 elif current_action is None and not is_paused:
                     for _ in range(fetch_count):
-                        img = source.fetch_next()
+                        img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
                         KDEWallpaperSetter.write_status("No valid images found.", "error")

@@ -78,20 +78,24 @@ class WallhavenSource(WallpaperSource):
                 print(f"⚠️ Wallhaven API connection error: {e}")
                 time.sleep(2)
 
-    def fetch_next(self) -> Optional[str]:
+    def fetch_next(self, abort_check=None) -> Optional[str]:
         if self.history_index < len(self.history) - 1:
             self.history_index += 1
             return self.history[self.history_index]
 
         attempts = 0
         while not self.image_queue and attempts < 3:
+            if abort_check and abort_check():
+                return None
             self._fetch_api_batch()
             attempts += 1
 
         # Download loop: Keep trying the queue until a download succeeds
         while self.image_queue:
+            if abort_check and abort_check():
+                return None
             img_url = self.image_queue.pop(0)
-            local_path = self.cache.download(img_url)
+            local_path = self.cache.download(img_url, abort_check=abort_check)
 
             if local_path:
                 self.history.append(local_path)
@@ -103,7 +107,7 @@ class WallhavenSource(WallpaperSource):
                 
         return None
 
-    def fetch_prev(self) -> Optional[str]:
+    def fetch_prev(self, abort_check=None) -> Optional[str]:
         if self.history_index > 0:
             self.history_index -= 1
             return self.history[self.history_index]
