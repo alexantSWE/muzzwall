@@ -375,7 +375,7 @@ def main():
             else:
                 print("No log file found. Is the daemon running?")
         except KeyboardInterrupt:
-            pass # Gracefully exit logs tail
+            pass # exit logs tail
 
 if __name__ == "__main__":
     main()
