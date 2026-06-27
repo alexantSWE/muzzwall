@@ -4,12 +4,20 @@
         "local_folder": {
             "path": "~/Pictures/Wallpapers",
             "order": "sequential"
+        },
+        "wallhaven": {
+            "max_size_mb": 2.0,
+            "api_key": "aav0uAb67hSeHmILd6HJDxSrKwwcpy4l",
+            "query": "takumi",
+            "purity": "101"
         }
     },
     "settings": {
-        "interval_seconds": 600,
+        "interval_seconds": 1200,
         "scale_mode": "fill",
         "border_color": "#000000",
-        "show_notifications": false
+        "show_notifications": false,
+        "proxy": "http://127.0.0.1:12334",
+        "accent_sync": true
     }
 }

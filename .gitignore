@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 .vscode/
 .idea/
+test_net.py
+config.json
