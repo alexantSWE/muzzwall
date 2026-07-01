@@ -318,7 +318,7 @@ def main():
     parser_config.add_argument("--interval", type=int, help="Set rotation interval in seconds")
     parser_config.add_argument("--folder", type=str, help="Set local folder path")
     parser_config.add_argument("--order", type=str, choices=["random", "sequential"], help="Set rotation order")
-    parser_config.add_argument("--mode", type=str, choices=["fill", "fit", "stretch", "center", "tile"], help="Set wallpaper scaling mode")
+    parser_config.add_argument("--mode", type=str, choices=["fill", "fit", "stretch", "center", "tile", "smart"], help="Set wallpaper scaling mode")
     parser_config.add_argument("--border", type=str, help="Set border hex color")
     parser_config.add_argument("--plugin", type=str, help="Set active plugin")
     parser_config.add_argument("--notify", type=str, choices=["true", "false"], help="Enable/disable desktop notifications")

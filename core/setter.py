@@ -4,6 +4,11 @@ import os
 import argparse
 import json
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 class KDEWallpaperSetter:
     MODE_MAP = {
         "fill": 0,    
@@ -95,12 +100,16 @@ class KDEWallpaperSetter:
     @staticmethod
     def save_wallpaper_backup(state: dict) -> bool:
         """Saves the original wallpaper state to a local file."""
+        path = KDEWallpaperSetter.get_backup_path()
+        tmp_path = path + ".tmp"
         try:
-            with open(KDEWallpaperSetter.get_backup_path(), "w") as f:
+            with open(tmp_path, "w") as f:
                 json.dump(state, f, indent=4)
+            os.replace(tmp_path, path)
             return True
         except Exception as e:
             print(f"Failed to save wallpaper backup: {e}")
+            if os.path.exists(tmp_path): os.remove(tmp_path)
             return False
 
     @staticmethod
@@ -141,11 +150,15 @@ class KDEWallpaperSetter:
             "image": image,
             "timestamp": time.time()
         }
+        path = KDEWallpaperSetter.get_status_path()
+        tmp_path = path + ".tmp"
         try:
-            with open(KDEWallpaperSetter.get_status_path(), "w") as f:
+            with open(tmp_path, "w") as f:
                 json.dump(data, f)
+            os.replace(tmp_path, path)
         except Exception as e:
             print(f"Failed to write status: {e}")
+            if os.path.exists(tmp_path): os.remove(tmp_path)
     @staticmethod
     def set_wallpaper(image_paths, mode: str = "fill", border_color: str = "#000000"):
         # Convert single string to list if necessary
@@ -157,24 +170,49 @@ class KDEWallpaperSetter:
             print("Error: No valid images found to set.")
             return False
 
-        fill_mode = KDEWallpaperSetter.MODE_MAP.get(mode.lower(), 0)
+        # Generate individual modes for each image dynamically
+        fill_modes = []
+        for path in valid_paths:
+            current_mode = mode.lower()
+            if current_mode == "smart":
+                if Image:
+                    try:
+                        with Image.open(path) as img:
+                            w, h = img.size
+                            ratio = w / h
+                            # 16:9 is ~1.77. If the image is between 1.5 and 1.9, it's safe to crop.
+                            # Otherwise (portrait, square, ultrawide), preserve it to avoid ugly cuts.
+                            if 1.5 <= ratio <= 1.9:
+                                current_mode = "fill"
+                            else:
+                                current_mode = "fit"
+                    except Exception as e:
+                        print(f"Smart mode error reading {path}: {e}")
+                        current_mode = "fit"
+                else:
+                    print("⚠️ Pillow is not installed. Falling back to 'fit'. Run: pip install Pillow")
+                    current_mode = "fit"
+
+            fill_modes.append(KDEWallpaperSetter.MODE_MAP.get(current_mode, 0))
+
         rgb_color = KDEWallpaperSetter.hex_to_rgb(border_color)
 
-        # Build a Javascript Array containing our image paths
-        js_array = "[" + ", ".join([f'"{p}"' for p in valid_paths]) + "]"
+        js_images = "[" + ", ".join([f'"{p}"' for p in valid_paths]) + "]"
+        js_modes = "[" + ", ".join(map(str, fill_modes)) + "]"
 
         js_script = f"""
-        var images = {js_array};
+        var images = {js_images};
+        var modes = {js_modes};
         var allDesktops = desktops();
         for (i=0; i<allDesktops.length; i++) {{
             var d = allDesktops[i];
             d.wallpaperPlugin = "org.kde.image";
             d.currentConfigGroup = Array("Wallpaper", "org.kde.image", "General");
             
-            // Assign a unique image to each desktop/activity using modulo
             var img = images[i % images.length];
+            var f_mode = modes[i % modes.length];
             d.writeConfig("Image", "file://" + img);
-            d.writeConfig("FillMode", {fill_mode});
+            d.writeConfig("FillMode", f_mode);
             d.writeConfig("Color", "{rgb_color}");
         }}
         """

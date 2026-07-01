@@ -23,10 +23,14 @@ class ConfigManager:
 
     @staticmethod
     def save(data: Dict[str, Any]) -> bool:
+        tmp_path = CONFIG_PATH + ".tmp"
         try:
-            with open(CONFIG_PATH, "w") as f:
+            with open(tmp_path, "w") as f:
                 json.dump(data, f, indent=4)
+            os.replace(tmp_path, CONFIG_PATH)
             return True
         except Exception as e:
             print(f"Failed to save config: {e}")
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             return False

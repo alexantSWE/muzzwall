@@ -13,8 +13,8 @@
         }
     },
     "settings": {
-        "interval_seconds": 1200,
-        "scale_mode": "fill",
+        "interval_seconds": 2400,
+        "scale_mode": "smart",
         "border_color": "#000000",
         "show_notifications": false,
         "proxy": "http://127.0.0.1:12334",
