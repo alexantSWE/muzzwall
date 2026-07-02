@@ -191,6 +191,7 @@ def main():
                         image_paths=next_images, 
                         mode=scale_mode, 
                         border_color=border_color
+                        
                     )
                     if success:
                         primary_image = next_images[0]

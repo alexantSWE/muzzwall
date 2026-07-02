@@ -319,7 +319,7 @@ def main():
     parser_config.add_argument("--folder", type=str, help="Set local folder path")
     parser_config.add_argument("--order", type=str, choices=["random", "sequential"], help="Set rotation order")
     parser_config.add_argument("--mode", type=str, choices=["fill", "fit", "stretch", "center", "tile", "smart"], help="Set wallpaper scaling mode")
-    parser_config.add_argument("--border", type=str, help="Set border hex color")
+    parser_config.add_argument("--border", type=str, help="Set border hex color (e.g., #000000) or 'dynamic' for ambient blend")
     parser_config.add_argument("--plugin", type=str, help="Set active plugin")
     parser_config.add_argument("--notify", type=str, choices=["true", "false"], help="Enable/disable desktop notifications")
     parser_config.add_argument("--recursive", type=str, choices=["true", "false"], help="Enable/disable recursive folder scanning")

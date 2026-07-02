@@ -5,9 +5,10 @@ import argparse
 import json
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageFilter
 except ImportError:
     Image = None
+    ImageFilter = None
 
 class KDEWallpaperSetter:
     MODE_MAP = {
@@ -26,7 +27,39 @@ class KDEWallpaperSetter:
             return f"{int(hex_string[0:2], 16)},{int(hex_string[2:4], 16)},{int(hex_string[4:6], 16)}"
         except ValueError:
             return "0,0,0" # Fallback to black
+    @staticmethod
+    def get_display_ratio() -> float:
+        """Dynamically detects the actual ratio of the primary/first active monitor."""
+        # Try kscreen-doctor (KDE native, works flawlessly on Wayland & X11)
+        try:
+            res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True)
+            if res.returncode == 0:
+                data = json.loads(res.stdout)
+                for output in data.get("outputs", []):
+                    if output.get("connected") and output.get("enabled"):
+                        mode_id = output.get("currentModeId")
+                        for mode in output.get("modes", []):
+                            if mode.get("id") == mode_id:
+                                w = mode.get("size", {}).get("width", 1600)
+                                h = mode.get("size", {}).get("height", 900)
+                                return w / h if h > 0 else 1.777
+        except Exception:
+            pass
+            
+        # Fallback to xrandr (Standard X11)
+        try:
+            res = subprocess.run(["xrandr"], capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                if "*" in line:  # Active resolution is marked with an asterisk
+                    parts = line.split()[0].split('x')
+                    if len(parts) == 2:
+                        w, h = int(parts[0]), int(parts[1])
+                        return w / h if h > 0 else 1.777
+        except Exception:
+            pass
 
+        # Failsafe fallback
+        return 1600 / 900
     @staticmethod
     def get_current_wallpaper() -> dict:
         """Reads the current KDE wallpaper config directly from appletsrc."""
@@ -92,6 +125,7 @@ class KDEWallpaperSetter:
         except Exception as e:
             print(f"⚠️ Failed to update KDE accent color settings: {e}")
             return False
+            
 
     @staticmethod
     def get_backup_path() -> str:
@@ -161,7 +195,6 @@ class KDEWallpaperSetter:
             if os.path.exists(tmp_path): os.remove(tmp_path)
     @staticmethod
     def set_wallpaper(image_paths, mode: str = "fill", border_color: str = "#000000"):
-        # Convert single string to list if necessary
         if isinstance(image_paths, str):
             image_paths = [image_paths]
             
@@ -170,39 +203,106 @@ class KDEWallpaperSetter:
             print("Error: No valid images found to set.")
             return False
 
-        # Generate individual modes for each image dynamically
+        final_paths = []
         fill_modes = []
+        hex_colors = []
+        
+        display_ratio = KDEWallpaperSetter.get_display_ratio() if mode.lower() == "smart" else 1.777
+
         for path in valid_paths:
             current_mode = mode.lower()
-            if current_mode == "smart":
-                if Image:
-                    try:
-                        with Image.open(path) as img:
-                            w, h = img.size
-                            ratio = w / h
-                            # 16:9 is ~1.77. If the image is between 1.5 and 1.9, it's safe to crop.
-                            # Otherwise (portrait, square, ultrawide), preserve it to avoid ugly cuts.
-                            if 1.5 <= ratio <= 1.9:
+            current_color = "#000000"
+            final_path = path
+            
+            if Image and ImageFilter:
+                try:
+                    with Image.open(path) as img:
+                        w, h = img.size
+                        img_ratio = w / h
+                        
+                        needs_blur = False
+                        needs_dynamic = False
+
+                        if current_mode == "smart":
+                            if (display_ratio * 0.85) <= img_ratio <= (display_ratio * 1.15):
                                 current_mode = "fill"
                             else:
-                                current_mode = "fit"
-                    except Exception as e:
-                        print(f"Smart mode error reading {path}: {e}")
-                        current_mode = "fit"
-                else:
-                    print("⚠️ Pillow is not installed. Falling back to 'fit'. Run: pip install Pillow")
+                                if border_color.lower() == "blur":
+                                    needs_blur = True
+                                else:
+                                    current_mode = "fit"
+                                    
+                        if border_color.lower() == "dynamic" and current_mode != "fill":
+                            needs_dynamic = True
+
+                        if needs_blur:
+                            img_rgb = img.convert("RGB")
+                            target_ratio = display_ratio
+                            
+                            if img_ratio < target_ratio:
+                                new_w = int(h * target_ratio)
+                                new_h = h
+                            else:
+                                new_w = w
+                                new_h = int(w / target_ratio)
+                            
+                            scale = 4
+                            small_w, small_h = new_w // scale, new_h // scale
+                            
+                            bg = img_rgb.resize((small_w, small_h))
+                            blur_radius = max(5, int(max(small_w, small_h) * 0.025))
+                            bg = bg.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+                            bg = bg.point(lambda p: int(p * 0.6))
+                            
+                            resampling_module = getattr(Image, "Resampling", Image)
+                            resample_filter = getattr(resampling_module, "LANCZOS", 1)
+                            bg = bg.resize((new_w, new_h), resample=resample_filter)
+                            
+                            offset_x = (new_w - w) // 2
+                            offset_y = (new_h - h) // 2
+                            bg.paste(img_rgb, (offset_x, offset_y))
+                            
+                            cache_dir = os.path.expanduser("~/.cache/muzwall")
+                            os.makedirs(cache_dir, exist_ok=True)
+                            filename = os.path.basename(path).split('.')[0]
+                            blurred_path = os.path.join(cache_dir, f"blur_{filename}.jpg")
+                            
+                            bg.save(blurred_path, quality=95)
+                            final_path = blurred_path
+                            current_mode = "fill" 
+                            
+                        elif needs_dynamic:
+                            thumb = img.copy()
+                            thumb.thumbnail((50, 50))
+                            thumb_rgb = thumb.convert("RGB")
+                            
+                            avg_color = thumb_rgb.resize((1, 1)).getpixel((0, 0))
+                            if isinstance(avg_color, tuple) and len(avg_color) >= 3:
+                                current_color = f"#{avg_color[0]:02x}{avg_color[1]:02x}{avg_color[2]:02x}"
+                                    
+                        elif border_color.lower() not in ["dynamic", "blur"]:
+                            current_color = border_color if border_color.startswith("#") else f"#{border_color}"
+
+                except Exception as e:
+                    print(f"Smart mode processing error for {path}: {e}")
                     current_mode = "fit"
+                    current_color = border_color if border_color.startswith("#") else "#000000"
+            else:
+                if current_mode == "smart": current_mode = "fit"
+                current_color = border_color if border_color.startswith("#") else "#000000"
 
+            final_paths.append(final_path)
             fill_modes.append(KDEWallpaperSetter.MODE_MAP.get(current_mode, 0))
+            hex_colors.append(current_color)
 
-        rgb_color = KDEWallpaperSetter.hex_to_rgb(border_color)
-
-        js_images = "[" + ", ".join([f'"{p}"' for p in valid_paths]) + "]"
+        js_images = "[" + ", ".join([f'"{p}"' for p in final_paths]) + "]"
         js_modes = "[" + ", ".join(map(str, fill_modes)) + "]"
+        js_colors = "[" + ", ".join([f'"{c}"' for c in hex_colors]) + "]"
 
         js_script = f"""
         var images = {js_images};
         var modes = {js_modes};
+        var colors = {js_colors};
         var allDesktops = desktops();
         for (i=0; i<allDesktops.length; i++) {{
             var d = allDesktops[i];
@@ -211,9 +311,11 @@ class KDEWallpaperSetter:
             
             var img = images[i % images.length];
             var f_mode = modes[i % modes.length];
-            d.writeConfig("Image", "file://" + img);
+            var b_color = colors[i % colors.length];
+            
             d.writeConfig("FillMode", f_mode);
-            d.writeConfig("Color", "{rgb_color}");
+            d.writeConfig("Color", b_color);
+            d.writeConfig("Image", "file://" + img);
         }}
         """
 
