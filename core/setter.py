@@ -28,11 +28,45 @@ class KDEWallpaperSetter:
         except ValueError:
             return "0,0,0" # Fallback to black
     @staticmethod
+    @staticmethod
     def get_display_ratio() -> float:
         """Dynamically detects the actual ratio of the primary/first active monitor."""
-        # Try kscreen-doctor (KDE native, works flawlessly on Wayland & X11)
+        env = os.environ.copy()
+        
+        # 1. Fetch exact environment variables from systemd's active session
         try:
-            res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True)
+            res = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    if key in ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]:
+                        env[key] = val
+        except Exception:
+            pass
+            
+        # 2. Pre-flight check: physically verify the display server is alive
+        # If Qt can't find these sockets, it calls abort() and creates a core dump.
+        display_ready = False
+        xdg_runtime = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        
+        if "WAYLAND_DISPLAY" in env:
+            wayland_socket = os.path.join(xdg_runtime, env["WAYLAND_DISPLAY"])
+            if os.path.exists(wayland_socket):
+                display_ready = True
+                
+        if not display_ready and "DISPLAY" in env:
+            display_num = env["DISPLAY"].replace(":", "").split(".")[0]
+            x11_socket = f"/tmp/.X11-unix/X{display_num}"
+            if os.path.exists(x11_socket):
+                display_ready = True
+                
+        # If no display server is ready, fallback cleanly without launching Qt.
+        if not display_ready:
+            return 1.777
+
+        # 3. Safe to execute Qt tools
+        try:
+            res = subprocess.run(["kscreen-doctor", "-j"], env=env, capture_output=True, text=True)
             if res.returncode == 0:
                 data = json.loads(res.stdout)
                 for output in data.get("outputs", []):
@@ -48,7 +82,7 @@ class KDEWallpaperSetter:
             
         # Fallback to xrandr (Standard X11)
         try:
-            res = subprocess.run(["xrandr"], capture_output=True, text=True)
+            res = subprocess.run(["xrandr"], env=env, capture_output=True, text=True)
             for line in res.stdout.splitlines():
                 if "*" in line:  # Active resolution is marked with an asterisk
                     parts = line.split()[0].split('x')
