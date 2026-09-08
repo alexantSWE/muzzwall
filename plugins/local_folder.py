@@ -1,6 +1,8 @@
+# plugins/local_folder.py
 import os
 import random
 import json
+import time
 from typing import Optional
 from core.wallpaper import WallpaperSource
 
@@ -17,10 +19,15 @@ class LocalFolderSource(WallpaperSource):
         self.persist_history = persist_history
         self.max_history = 50
         self.history_file = os.path.expanduser("~/.config/muzwall_history.json")
-        
+
         self.history = []
         self.history_index = -1
         self.sequential_index = -1
+
+        # In-memory file cache so large libraries don't hammer disk I/O on every switch
+        self._cached_images = []
+        self._last_scan_time = 0
+        self._scan_interval = 60 # Refresh folder state at most once every 60s
 
         if self.persist_history:
             self._load_history()
@@ -34,7 +41,7 @@ class LocalFolderSource(WallpaperSource):
                     self.history = data.get("history", [])[-self.max_history:]
                     self.history_index = data.get("history_index", -1)
                     self.sequential_index = data.get("sequential_index", -1)
-                    
+
                     if self.history_index >= len(self.history):
                         self.history_index = len(self.history) - 1
             except Exception as e:
@@ -44,7 +51,7 @@ class LocalFolderSource(WallpaperSource):
         """Saves current state via Atomic Write so it survives crashes."""
         if not self.persist_history:
             return
-            
+
         tmp_file = self.history_file + ".tmp"
         try:
             with open(tmp_file, "w") as f:
@@ -60,29 +67,38 @@ class LocalFolderSource(WallpaperSource):
                 os.remove(tmp_file)
 
     def _get_valid_images(self):
+        """Fast cached directory scanning using os.scandir."""
+        now = time.time()
+        if self._cached_images and (now - self._last_scan_time < self._scan_interval):
+            return self._cached_images
+
         if not os.path.exists(self.folder_path):
             print(f"Plugin Error: Folder '{self.folder_path}' does not exist.")
             return []
 
-        valid_exts = {'.png', '.jpg', '.jpeg', '.webp'}
+        valid_exts = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
         images = []
-        
+
         if self.recursive:
             for root, _, files in os.walk(self.folder_path):
                 for f in files:
                     if os.path.splitext(f)[1].lower() in valid_exts:
                         images.append(os.path.join(root, f))
         else:
-            for f in os.listdir(self.folder_path):
-                if os.path.splitext(f)[1].lower() in valid_exts:
-                    images.append(os.path.join(self.folder_path, f))
-                    
-        return sorted(images)
+            for f in os.scandir(self.folder_path):
+                if f.is_file() and os.path.splitext(f.name)[1].lower() in valid_exts:
+                    images.append(f.path)
+
+        self._cached_images = sorted(images)
+        self._last_scan_time = now
+        return self._cached_images
 
     def _is_image_valid(self, path: str) -> bool:
-        """Verifies file headers and magic bytes to prevent KDE crashes."""
+        """Verifies file headers to prevent crashes on broken downloads."""
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
         if not Image:
-            return True  # Bypass check if Pillow is missing
+            return True
         try:
             with Image.open(path) as img:
                 img.verify()
@@ -94,19 +110,15 @@ class LocalFolderSource(WallpaperSource):
     def fetch_next(self, abort_check=None) -> Optional[str]:
         images = self._get_valid_images()
         if not images: return None
-        
-        # Max attempts to avoid infinite loop if the whole folder is corrupt
-        max_attempts = len(images)
+
+        max_attempts = min(len(images), 50)
 
         for _ in range(max_attempts):
             if abort_check and abort_check():
                 return None
 
             if self.order == "sequential":
-                self.sequential_index += 1
-                if self.sequential_index >= len(images):
-                    self.sequential_index = 0
-                
+                self.sequential_index = (self.sequential_index + 1) % len(images)
                 chosen = images[self.sequential_index]
                 if self._is_image_valid(chosen):
                     self._save_history()
@@ -115,12 +127,11 @@ class LocalFolderSource(WallpaperSource):
                 if self.history_index < len(self.history) - 1:
                     self.history_index += 1
                     chosen = self.history[self.history_index]
-                    
+
                     if self._is_image_valid(chosen):
                         self._save_history()
                         return chosen
                     else:
-                        # Image went corrupt/missing after being in history
                         self.history.pop(self.history_index)
                         self.history_index -= 1
                         continue
@@ -128,12 +139,11 @@ class LocalFolderSource(WallpaperSource):
                 chosen = random.choice(images)
                 if self._is_image_valid(chosen):
                     self.history.append(chosen)
-                    
                     if len(self.history) > self.max_history:
                         self.history.pop(0)
                     else:
                         self.history_index += 1
-                    
+
                     self._save_history()
                     return chosen
 
@@ -143,18 +153,14 @@ class LocalFolderSource(WallpaperSource):
         images = self._get_valid_images()
         if not images: return None
 
-        max_attempts = len(images)
+        max_attempts = min(len(images), 50)
 
         for _ in range(max_attempts):
             if abort_check and abort_check():
                 return None
 
             if self.order == "sequential":
-                if self.sequential_index <= 0 or self.sequential_index >= len(images):
-                    self.sequential_index = len(images) - 1
-                else:
-                    self.sequential_index -= 1
-                    
+                self.sequential_index = (self.sequential_index - 1) % len(images)
                 chosen = images[self.sequential_index]
                 if self._is_image_valid(chosen):
                     self._save_history()
@@ -163,7 +169,7 @@ class LocalFolderSource(WallpaperSource):
                 if self.history_index > 0:
                     self.history_index -= 1
                     chosen = self.history[self.history_index]
-                    
+
                     if self._is_image_valid(chosen):
                         self._save_history()
                         return chosen

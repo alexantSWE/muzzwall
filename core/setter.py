@@ -4,22 +4,32 @@ import os
 import argparse
 import json
 
+# Try importing OpenCV for GPU/OpenCL acceleration; fallback to Pillow if absent
 try:
-    from PIL import Image, ImageFilter
+    import cv2
     import numpy as np
+    cv2.ocl.setUseOpenCL(True)
+    HAS_CV2 = True
 except ImportError:
-    Image = None
-    ImageFilter = None
-    np = None
+    HAS_CV2 = False
+    try:
+        from PIL import Image, ImageFilter
+        import numpy as np
+    except ImportError:
+        Image = None
+        ImageFilter = None
+        np = None
 
 class KDEWallpaperSetter:
     MODE_MAP = {
-        "fill": 0,    
-        "fit": 1,     
-        "stretch": 6, 
-        "center": 3,  
-        "tile": 4     
+        "fill": 0,
+        "fit": 1,
+        "stretch": 6,
+        "center": 3,
+        "tile": 4
     }
+
+    _cached_display_bounds = None
 
     @staticmethod
     def hex_to_rgb(hex_string: str) -> str:
@@ -31,9 +41,11 @@ class KDEWallpaperSetter:
 
     @staticmethod
     def get_display_bounds() -> tuple:
-        """Dynamically detects the resolution (width, height) of the primary monitor."""
+        """Dynamically detects and caches resolution to prevent spawning subprocesses on every switch."""
+        if KDEWallpaperSetter._cached_display_bounds:
+            return KDEWallpaperSetter._cached_display_bounds
+
         env = os.environ.copy()
-        
         try:
             res = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True)
             for line in res.stdout.splitlines():
@@ -43,24 +55,23 @@ class KDEWallpaperSetter:
                         env[key] = val
         except Exception:
             pass
-            
+
         display_ready = False
         xdg_runtime = env.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-        
-        if "WAYLAND_DISPLAY" in env:
-            if os.path.exists(os.path.join(xdg_runtime, env["WAYLAND_DISPLAY"])):
-                display_ready = True
+
+        if "WAYLAND_DISPLAY" in env and os.path.exists(os.path.join(xdg_runtime, env["WAYLAND_DISPLAY"])):
+            display_ready = True
         if not display_ready and "DISPLAY" in env:
             display_num = env["DISPLAY"].replace(":", "").split(".")[0]
             if os.path.exists(f"/tmp/.X11-unix/X{display_num}"):
                 display_ready = True
-                
+
         if not display_ready:
             return (1920, 1080)
 
-        # Try KDE Plasma Wayland/X11
+        # 1. Try kscreen-doctor (Plasma Wayland & Modern X11)
         try:
-            res = subprocess.run(["kscreen-doctor", "-j"], env=env, capture_output=True, text=True)
+            res = subprocess.run(["kscreen-doctor", "-j"], env=env, capture_output=True, text=True, timeout=1)
             if res.returncode == 0:
                 data = json.loads(res.stdout)
                 for output in data.get("outputs", []):
@@ -68,26 +79,31 @@ class KDEWallpaperSetter:
                         mode_id = output.get("currentModeId")
                         for mode in output.get("modes", []):
                             if mode.get("id") == mode_id:
-                                return (mode.get("size", {}).get("width", 1920), 
-                                        mode.get("size", {}).get("height", 1080))
+                                size = (mode["size"]["width"], mode["size"]["height"])
+                                KDEWallpaperSetter._cached_display_bounds = size
+                                return size
         except Exception:
             pass
-            
-        # Fallback to xrandr
+
+        # 2. Fallback to xrandr
         try:
-            res = subprocess.run(["xrandr"], env=env, capture_output=True, text=True)
+            res = subprocess.run(["xrandr"], env=env, capture_output=True, text=True, timeout=1)
             for line in res.stdout.splitlines():
                 if "*" in line:
                     parts = line.split()[0].split('x')
                     if len(parts) == 2:
-                        return (int(parts[0]), int(parts[1]))
+                        size = (int(parts[0]), int(parts[1]))
+                        KDEWallpaperSetter._cached_display_bounds = size
+                        return size
         except Exception:
             pass
 
+        KDEWallpaperSetter._cached_display_bounds = (1920, 1080)
         return (1920, 1080)
 
     @staticmethod
     def get_current_wallpaper() -> dict:
+        """Parses the KDE desktop applet config to recover active wallpaper settings."""
         config_path = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
         if not os.path.exists(config_path): return {}
         state = {"image": "", "mode": "fill", "color": "#000000"}
@@ -119,16 +135,15 @@ class KDEWallpaperSetter:
     @staticmethod
     def set_accent_color_from_wallpaper(enable: bool):
         val = "true" if enable else "false"
-        try:
-            subprocess.run(["kwriteconfig6", "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError): pass
-        try:
-            subprocess.run(["kwriteconfig5", "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
-            return True
-        except Exception as e:
-            print(f"⚠️ Failed to update KDE accent color: {e}")
-            return False
+        for cmd in ["kwriteconfig6", "kwriteconfig5"]:
+            try:
+                subprocess.run([cmd, "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+            except Exception as e:
+                print(f"⚠️ Failed to update KDE accent color: {e}")
+        return False
 
     @staticmethod
     def get_backup_path() -> str: return os.path.expanduser("~/.config/muzwall_backup.json")
@@ -167,80 +182,123 @@ class KDEWallpaperSetter:
         except Exception: pass
 
     @staticmethod
-    def evaluate_smart_mode(img, disp_w, disp_h) -> tuple:
-        """
-        Uses mathematical image analysis on a downscaled proxy to determine scaling mode.
-        Returns: (best_mode_string, requires_padding_blur_bool)
-        """
-        orig_w, orig_h = img.size
-        img_ratio = orig_w / orig_h
-        disp_ratio = disp_w / disp_h
+    def evaluate_smart_mode(img_bgr_or_pil, disp_w: int, disp_h: int) -> tuple:
+        """GPU-accelerated mathematical image analysis (with Pillow fallback)."""
+        if HAS_CV2 and isinstance(img_bgr_or_pil, np.ndarray):
+            orig_h, orig_w = img_bgr_or_pil.shape[:2]
+            img_ratio = orig_w / orig_h
+            disp_ratio = disp_w / disp_h
 
-        # 1. TOO SMALL Check
-        if orig_w < (disp_w * 0.6) and orig_h < (disp_h * 0.6):
-            return "center", True
+            if orig_w < (disp_w * 0.6) and orig_h < (disp_h * 0.6):
+                return "center", True
+            if abs(img_ratio - disp_ratio) < 0.05:
+                return "fill", False
 
-        # 2. NEAR PERFECT Check
-        if abs(img_ratio - disp_ratio) < 0.05:
-            return "fill", False
+            # GPU OpenCL Sobel edge gradient on 256x256 thumbnail
+            u_img = cv2.UMat(img_bgr_or_pil)
+            u_small = cv2.resize(u_img, (256, 256), interpolation=cv2.INTER_NEAREST)
+            u_gray = cv2.cvtColor(u_small, cv2.COLOR_BGR2GRAY)
 
-        # 3. TYPE GUARD & FALLBACK
-        # This tells Pylance (and Python) that if ANY of these are None, we abort.
-        # This guarantees Image, ImageFilter, and np are valid modules below.
-        if Image is None or ImageFilter is None or np is None:
-            if (disp_ratio * 0.85) <= img_ratio <= (disp_ratio * 1.15): return "fill", False
+            grad_x = cv2.Sobel(u_gray, cv2.CV_32F, 1, 0, ksize=3)
+            grad_y = cv2.Sobel(u_gray, cv2.CV_32F, 0, 1, ksize=3)
+            magnitude = cv2.magnitude(grad_x, grad_y).get()
+
+            total_energy = np.sum(magnitude) or 1.0
+
+            if img_ratio > disp_ratio:
+                new_w = int(256 * (disp_ratio / img_ratio))
+                crop = (256 - new_w) // 2
+                lost_energy = np.sum(magnitude[:, :crop]) + np.sum(magnitude[:, -crop:])
+            else:
+                new_h = int(256 * (img_ratio / disp_ratio))
+                crop = (256 - new_h) // 2
+                lost_energy = np.sum(magnitude[:crop, :]) + np.sum(magnitude[-crop:, :])
+
+            if (lost_energy / total_energy) < 0.15:
+                return "fill", False
+
+            variance = np.var(u_gray.get())
+            if variance < 1000 and abs(img_ratio - disp_ratio) < 0.25:
+                return "stretch", False
             return "fit", True
 
-        # --- OPTIMIZATION START ---
-        analysis_img = img.copy()
-        
-        resample_method = getattr(Image.Resampling, "NEAREST", 0) if hasattr(Image, "Resampling") else getattr(Image, "NEAREST", 0)
-        analysis_img.thumbnail((512, 512), resample=resample_method)
-        
-        aw, ah = analysis_img.size
-        # --- OPTIMIZATION END ---
+        # Fallback to Pillow
+        elif Image and ImageFilter and np:
+            img = img_bgr_or_pil
+            orig_w, orig_h = img.size
+            img_ratio = orig_w / orig_h
+            disp_ratio = disp_w / disp_h
 
-        # 4. ENERGY/CROP Check 
-        gray = analysis_img.convert('L')
-        edges = gray.filter(ImageFilter.FIND_EDGES)
-        
-        edge_data = np.array(edges, dtype=np.uint32)
-        total_energy = np.sum(edge_data)
-        if total_energy == 0: total_energy = 1
+            if orig_w < (disp_w * 0.6) and orig_h < (disp_h * 0.6):
+                return "center", True
+            if abs(img_ratio - disp_ratio) < 0.05:
+                return "fill", False
 
-        lost_energy = 0
-        if img_ratio > disp_ratio: 
-            new_w = int(ah * disp_ratio)
-            crop = aw - new_w
-            left = crop // 2
-            right = crop - left
-            lost_energy = np.sum(edge_data[:, :left]) + np.sum(edge_data[:, -right:])
-        else: 
-            new_h = int(aw / disp_ratio)
-            crop = ah - new_h
-            top = crop // 2
-            bottom = crop - top
-            lost_energy = np.sum(edge_data[:top, :]) + np.sum(edge_data[-bottom:, :])
+            analysis_img = img.copy()
+            resample_method = getattr(Image.Resampling, "NEAREST", 0) if hasattr(Image, "Resampling") else getattr(Image, "NEAREST", 0)
+            analysis_img.thumbnail((256, 256), resample=resample_method)
+            aw, ah = analysis_img.size
 
-        loss_ratio = lost_energy / total_energy
-        
-        if loss_ratio < 0.15:
-            return "fill", False
+            gray = analysis_img.convert('L')
+            edges = gray.filter(ImageFilter.FIND_EDGES)
+            edge_data = np.array(edges, dtype=np.uint32)
+            total_energy = np.sum(edge_data) or 1
 
-        # 5. ABSTRACT/STRETCH Check
-        pixel_data = np.array(gray)
-        variance = np.var(pixel_data)
+            if img_ratio > disp_ratio:
+                new_w = int(ah * disp_ratio)
+                crop = aw - new_w
+                left = crop // 2
+                right = crop - left
+                lost_energy = np.sum(edge_data[:, :left]) + np.sum(edge_data[:, -right:])
+            else:
+                new_h = int(aw / disp_ratio)
+                crop = ah - new_h
+                top = crop // 2
+                bottom = crop - top
+                lost_energy = np.sum(edge_data[:top, :]) + np.sum(edge_data[-bottom:, :])
 
-        if variance < 1000 and abs(img_ratio - disp_ratio) < 0.25:
-            return "stretch", False
+            if (lost_energy / total_energy) < 0.15:
+                return "fill", False
+
+            pixel_data = np.array(gray)
+            if np.var(pixel_data) < 1000 and abs(img_ratio - disp_ratio) < 0.25:
+                return "stretch", False
+            return "fit", True
 
         return "fit", True
+
+    @staticmethod
+    def render_fast_blur(img_bgr, disp_w: int, disp_h: int, output_path: str):
+        """GPU Dual-Kawase style downsample-blur-upscale written to RAM disk."""
+        h, w = img_bgr.shape[:2]
+        target_ratio = disp_w / disp_h
+        img_ratio = w / h
+
+        if img_ratio < target_ratio:
+            new_w, new_h = int(h * target_ratio), h
+        else:
+            new_w, new_h = w, int(w / target_ratio)
+
+        u_img = cv2.UMat(img_bgr)
+        # GPU downscale to 1/16th resolution
+        small_w, small_h = max(32, new_w // 16), max(32, new_h // 16)
+        u_bg = cv2.resize(u_img, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
+        u_bg = cv2.GaussianBlur(u_bg, (15, 15), 0)
+        u_bg = cv2.resize(u_bg, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        bg = (u_bg.get() * 0.6).astype(np.uint8)
+
+        # Place original sharp frame
+        offset_x = (new_w - w) // 2
+        offset_y = (new_h - h) // 2
+        bg[offset_y:offset_y+h, offset_x:offset_x+w] = img_bgr
+
+        cv2.imwrite(output_path, bg, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
     @staticmethod
     def set_wallpaper(image_paths, mode: str = "fill", border_color: str = "#000000"):
         if isinstance(image_paths, str):
             image_paths = [image_paths]
-            
+
         valid_paths = [os.path.abspath(p) for p in image_paths if os.path.exists(os.path.abspath(p))]
         if not valid_paths:
             return False
@@ -248,70 +306,76 @@ class KDEWallpaperSetter:
         final_paths, fill_modes, hex_colors = [], [], []
         disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
 
-        for path in valid_paths:
+        # Shared Memory (RAM Disk) directory
+        ram_dir = "/dev/shm/muzwall" if os.path.exists("/dev/shm") else os.path.expanduser("~/.cache/muzwall")
+        os.makedirs(ram_dir, exist_ok=True)
+
+        for idx, path in enumerate(valid_paths):
             current_mode = mode.lower()
             current_color = border_color if border_color.startswith("#") else "#000000"
             final_path = path
-            
-            if Image and ImageFilter:
+
+            # 1. OpenCV Accelerated Path
+            if HAS_CV2:
+                try:
+                    img = cv2.imread(path)
+                    if img is not None:
+                        needs_padding = False
+                        if current_mode == "smart":
+                            current_mode, needs_padding = KDEWallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
+                            if needs_padding and border_color.lower() not in ["blur", "dynamic"]:
+                                needs_padding = False
+
+                        if needs_padding or (border_color.lower() == "blur" and current_mode in ["fit", "center"]):
+                            blurred_path = os.path.join(ram_dir, f"blur_{idx}_{os.path.basename(path).split('.')[0]}.jpg")
+                            KDEWallpaperSetter.render_fast_blur(img, disp_w, disp_h, blurred_path)
+                            final_path = blurred_path
+                            current_mode = "fill"
+                        elif border_color.lower() == "dynamic" and current_mode not in ["fill", "stretch"]:
+                            avg = cv2.mean(img)
+                            current_color = f"#{int(avg[2]):02x}{int(avg[1]):02x}{int(avg[0]):02x}"
+                except Exception as e:
+                    print(f"Smart processing error (CV2): {e}")
+
+            # 2. Pillow Fallback Path
+            elif Image and ImageFilter:
                 try:
                     with Image.open(path) as img:
                         w, h = img.size
                         needs_padding = False
-                        
                         if current_mode == "smart":
                             current_mode, needs_padding = KDEWallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
-                            
-                            # Enforce users 'blur' preference even if Fit was chosen mathematically
-                            if needs_padding and border_color.lower() != "blur":
-                                if border_color.lower() == "dynamic":
-                                    pass # Handled below
-                                else:
-                                    needs_padding = False
+                            if needs_padding and border_color.lower() not in ["blur", "dynamic"]:
+                                needs_padding = False
 
                         if needs_padding or (border_color.lower() == "blur" and current_mode in ["fit", "center"]):
                             img_rgb = img.convert("RGB")
                             target_ratio = disp_w / disp_h
                             img_ratio = w / h
-                            
-                            if img_ratio < target_ratio:
-                                new_w, new_h = int(h * target_ratio), h
-                            else:
-                                new_w, new_h = w, int(w / target_ratio)
-                            
-                            # Create a smaller downscaled copy for fast, intense blurring
+                            new_w, new_h = (int(h * target_ratio), h) if img_ratio < target_ratio else (w, int(w / target_ratio))
+
                             scale = 4
                             small_w, small_h = new_w // scale, new_h // scale
-                            
                             bg = img_rgb.resize((small_w, small_h))
                             bg = bg.filter(ImageFilter.GaussianBlur(radius=max(5, int(max(small_w, small_h) * 0.025))))
-                            bg = bg.point(lambda p: int(p * 0.6)) # Darken slightly for contrast
-                            
+                            bg = bg.point(lambda p: int(p * 0.6))
+
                             resampling = getattr(Image.Resampling, "LANCZOS", 1) if hasattr(Image, "Resampling") else getattr(Image, "LANCZOS", 1)
                             bg = bg.resize((new_w, new_h), resample=resampling)
-                            
                             bg.paste(img_rgb, ((new_w - w) // 2, (new_h - h) // 2))
-                            
-                            cache_dir = os.path.expanduser("~/.cache/muzwall")
-                            filename = f"blur_{os.path.basename(path).split('.')[0]}.jpg"
-                            blurred_path = os.path.join(cache_dir, filename)
-                            
-                            bg.save(blurred_path, quality=95)
+
+                            blurred_path = os.path.join(ram_dir, f"blur_{idx}_{os.path.basename(path).split('.')[0]}.jpg")
+                            bg.save(blurred_path, quality=92)
                             final_path = blurred_path
-                            current_mode = "fill" # The generated image perfectly matches the screen ratio now
-                            
+                            current_mode = "fill"
                         elif border_color.lower() == "dynamic" and current_mode not in ["fill", "stretch"]:
                             thumb = img.copy()
                             thumb.thumbnail((50, 50))
                             avg_color = thumb.convert("RGB").resize((1, 1)).getpixel((0, 0))
                             if isinstance(avg_color, tuple) and len(avg_color) >= 3:
                                 current_color = f"#{avg_color[0]:02x}{avg_color[1]:02x}{avg_color[2]:02x}"
-
                 except Exception as e:
-                    print(f"Smart processing error for {path}: {e}")
-                    if current_mode == "smart": current_mode = "fit"
-            else:
-                if current_mode == "smart": current_mode = "fit"
+                    print(f"Smart processing error (Pillow): {e}")
 
             final_paths.append(final_path)
             fill_modes.append(KDEWallpaperSetter.MODE_MAP.get(current_mode, 0))

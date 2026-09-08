@@ -163,6 +163,12 @@ def handle_config(args):
         config.setdefault("settings", {})["accent_sync"] = val
         print(f"✅ Set KDE Accent Sync to {val}.")
         updated = True
+    theme_sync = getattr(args, "theme_sync", None)
+    if theme_sync is not None:
+        val = theme_sync.lower() == "true"
+        config.setdefault("settings", {})["theme_sync"] = val
+        print(f"✅ Set Muzwall desktop theme synchronization to {val}.")
+        updated = True
     if args.proxy is not None:
         if args.proxy.lower() == "none":
             config.setdefault("settings", {}).pop("proxy", None)
@@ -327,6 +333,7 @@ def main():
     parser_config.add_argument("--persist", type=str, choices=["true", "false"], help="Enable/disable remembering history across reboots")
     parser_config.add_argument("--proxy", type=str, help="Set HTTP/HTTPS proxy (e.g., http://127.0.0.1:10809) or 'none' to clear")
     parser_config.add_argument("--accent", type=str, choices=["true", "false"], help="Enable/disable KDE native Accent Color from wallpaper")
+    parser_config.add_argument("--theme-sync", type=str, choices=["true", "false"], help="Enable/disable local wallpaper-driven desktop theme synchronization")
     # Wallhaven Plugin Config
     parser_config.add_argument("--wh-query", type=str, help="Wallhaven search query (e.g., 'cyberpunk', 'nature')")
     parser_config.add_argument("--wh-categories", type=str, help="Wallhaven categories (e.g., 111 for All, 010 for Anime)")
@@ -337,6 +344,12 @@ def main():
 
     subparsers.add_parser("toggle", help="Toggle between paused and resumed rotation")
     subparsers.add_parser("shortcuts", help="Install KDE desktop shortcuts to bind keys via System Settings")
+
+    parser_theme = subparsers.add_parser("theme", help="Generate the local Muzwall desktop theme")
+    parser_theme.add_argument("--sync", metavar="IMAGE", help="Derive a theme from a local wallpaper")
+    parser_theme.add_argument("--hue", type=float, help="Use an explicit anchor hue instead of an image")
+    parser_theme.add_argument("--init", action="store_true", help="Apply 60Hz physics, KWin effects and typography once")
+    parser_theme.add_argument("--no-activate", action="store_true", help="Generate artifacts without changing the live desktop")
 
     args = parser.parse_args()
 
@@ -356,6 +369,29 @@ def main():
         show_status()
     elif args.command == "config":
         handle_config(args)
+    elif args.command == "theme":
+        from core.palette import ThemePalette
+        from theming.orchestrator import DesktopThemeOrchestrator
+
+        if args.init:
+            report = DesktopThemeOrchestrator.initialize_system(activate=not args.no_activate)
+        elif args.sync:
+            image_path = os.path.abspath(os.path.expanduser(args.sync))
+            if not os.path.isfile(image_path):
+                parser.error(f"local wallpaper does not exist: {image_path}")
+            report = DesktopThemeOrchestrator.sync_from_image(
+                image_path, activate_kde=not args.no_activate
+            )
+        elif args.hue is not None:
+            if not 0 <= args.hue <= 360:
+                parser.error("--hue must be between 0 and 360")
+            palette = ThemePalette(args.hue)
+            report = DesktopThemeOrchestrator.sync_from_palette(
+                palette, activate_kde=not args.no_activate
+            )
+        else:
+            parser.error("theme requires --init, --sync IMAGE or --hue DEGREES")
+        print(json.dumps(report, indent=2, default=str))
     elif args.command == "start":
         print("Starting daemon...")
         subprocess.run(["systemctl", "--user", "start", "muzwall.service"])

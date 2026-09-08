@@ -13,11 +13,12 @@
         }
     },
     "settings": {
-        "interval_seconds": 2400,
+        "interval_seconds": 1800,
         "scale_mode": "smart",
         "border_color": "dynamic",
         "show_notifications": false,
         "proxy": "http://127.0.0.1:12334",
-        "accent_sync": true
+        "accent_sync": true,
+        "theme_sync": true
     }
 }

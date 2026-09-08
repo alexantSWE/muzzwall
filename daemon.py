@@ -4,6 +4,7 @@ import signal
 import sys
 import os
 import subprocess
+import threading
 
 LOG_FILE = os.path.expanduser("~/.cache/muzwall/muzwall.log")
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -12,13 +13,13 @@ class LoggerWriter:
     def __init__(self, level):
         self.level = level
         self.log_file = open(LOG_FILE, "a", buffering=1)
-        
+
     def write(self, message):
         if message.strip():
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             for line in message.strip().split('\n'):
                 self.log_file.write(f"[{timestamp}] {line}\n")
-            
+
     def flush(self):
         self.log_file.flush()
 
@@ -26,10 +27,19 @@ sys.stdout = LoggerWriter("INFO")
 sys.stderr = LoggerWriter("ERROR")
 
 from core.setter import KDEWallpaperSetter
-from core.config import ConfigManager
+from core.config import ConfigManager, CONFIG_PATH
 from plugins.local_folder import LocalFolderSource
+from plugins.wallhaven import WallhavenSource
+from core.wallpaper import WallpaperSource
+from typing import Optional
+
+try:
+    from theming.orchestrator import DesktopThemeOrchestrator
+except ImportError:
+    DesktopThemeOrchestrator = None
 
 original_wallpaper_state = {}
+action_event = threading.Event()
 action_requested = None
 
 def restore_wallpaper_and_exit(signum=None, frame=None):
@@ -37,9 +47,9 @@ def restore_wallpaper_and_exit(signum=None, frame=None):
     if original_wallpaper_state and original_wallpaper_state.get("image"):
         print("Restoring original wallpaper...")
         KDEWallpaperSetter.set_wallpaper(
-            image_paths=original_wallpaper_state["image"],  # Changed to image_paths
-            mode=original_wallpaper_state["mode"],
-            border_color=original_wallpaper_state["color"]
+            image_paths=original_wallpaper_state["image"],
+            mode=original_wallpaper_state.get("mode", "fill"),
+            border_color=original_wallpaper_state.get("color", "#000000")
         )
         KDEWallpaperSetter.clear_wallpaper_backup()
     sys.exit(0)
@@ -48,45 +58,42 @@ def handle_next_signal(signum, frame):
     global action_requested
     print("\n[Signal] Received next signal.")
     action_requested = "next"
+    action_event.set() # Instantly breaks out of sleep without 200ms tick delay
 
 def handle_prev_signal(signum, frame):
     global action_requested
     print("\n[Signal] Received prev signal.")
     action_requested = "prev"
-
-from plugins.local_folder import LocalFolderSource
-from plugins.wallhaven import WallhavenSource 
-from core.wallpaper import WallpaperSource
-from typing import Optional
+    action_event.set() # Instantly breaks out of sleep
 
 def get_plugin_instance(config) -> Optional[WallpaperSource]:
     plugin_name = config.get("active_plugin", "local_folder")
-    # Normalize name so 'localfolder' and 'local_folder' are treated equally
     normalized_name = plugin_name.lower().replace("_", "")
-    
+
     if normalized_name == "localfolder":
         plugin_config = config.get("plugins", {}).get("local_folder", {})
-        folder_path = plugin_config.get("path", "~/Pictures")
-        order = plugin_config.get("order", "random")
-        recursive = plugin_config.get("recursive", False)
-        persist = plugin_config.get("persist_history", True)
-        return LocalFolderSource(folder_path, order, recursive, persist)
-        
+        return LocalFolderSource(
+            folder_path=plugin_config.get("path", "~/Pictures"),
+            order=plugin_config.get("order", "random"),
+            recursive=plugin_config.get("recursive", False),
+            persist_history=plugin_config.get("persist_history", True)
+        )
     elif normalized_name == "wallhaven":
         plugin_config = config.get("plugins", {}).get("wallhaven", {})
-        query = plugin_config.get("query", "")
-        categories = plugin_config.get("categories", "111")
-        purity = plugin_config.get("purity", "100")
-        sorting = plugin_config.get("sorting", "random")
-        api_key = plugin_config.get("api_key", "")
-        max_size_mb = plugin_config.get("max_size_mb", 20.0)
-        return WallhavenSource(query, categories, purity, sorting, api_key, max_size_mb)
-        
+        return WallhavenSource(
+            query=plugin_config.get("query", ""),
+            categories=plugin_config.get("categories", "111"),
+            purity=plugin_config.get("purity", "100"),
+            sorting=plugin_config.get("sorting", "random"),
+            api_key=plugin_config.get("api_key", ""),
+            max_size_mb=plugin_config.get("max_size_mb", 20.0)
+        )
     return None
+
 def main():
-    global original_wallpaper_state
+    global original_wallpaper_state, action_requested
     print("Muzwall Daemon started. Press Ctrl+C to exit.")
-    
+
     # 1. Recover or backup the original wallpaper
     original_wallpaper_state = KDEWallpaperSetter.load_wallpaper_backup()
     if original_wallpaper_state:
@@ -109,27 +116,30 @@ def main():
     current_plugin_settings = None
     current_accent_sync = None
     source = None
-    
+
     try:
         while True:
-            # Load config safely
             config = ConfigManager.load()
             if not config:
                 time.sleep(1)
                 continue
-                
+
             settings = config.get("settings", {})
             interval = settings.get("interval_seconds", 60)
             scale_mode = settings.get("scale_mode", "fit")
             border_color = settings.get("border_color", "#000000")
             accent_sync = settings.get("accent_sync", False)
+            theme_sync = settings.get("theme_sync", False)
 
-            # Apply KDE Accent sync if it changed in config
-            if current_accent_sync != accent_sync:
-                KDEWallpaperSetter.set_accent_color_from_wallpaper(accent_sync)
-                current_accent_sync = accent_sync
+            # Apply KDE Accent sync if it changed
+            # The generated Muzwall palette owns the accent while theme_sync
+            # is enabled; native wallpaper extraction would overwrite it.
+            effective_accent_sync = accent_sync and not theme_sync
+            if current_accent_sync != effective_accent_sync:
+                KDEWallpaperSetter.set_accent_color_from_wallpaper(effective_accent_sync)
+                current_accent_sync = effective_accent_sync
 
-            # Re-initialize plugin ONLY if config changed
+            # Re-initialize plugin ONLY if plugin settings changed
             plugin_name = config.get("active_plugin", "local_folder")
             plugin_settings = config.get("plugins", {}).get(plugin_name, {})
 
@@ -137,32 +147,24 @@ def main():
                 source = get_plugin_instance(config)
                 current_plugin_name = plugin_name
                 current_plugin_settings = plugin_settings
-            
-            if source:
-                global action_requested
-                current_action = action_requested
-                # Clear it immediately so we only abort if a NEW signal comes in!
-                action_requested = None 
-                
-                from core.config import CONFIG_PATH
-                config_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
 
-                def should_abort():
-                    if action_requested:
-                        return True
-                    current_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
-                    if current_mtime > config_mtime:
-                        return True
-                    return False
-                
-                # Check locks and settings
-                is_paused = os.path.exists(os.path.expanduser("~/.config/muzwall.pause"))
-                is_unique = settings.get("unique_wallpapers", False)
-                fetch_count = 8 if is_unique else 1 # Fetch up to 8 unique images if enabled
-                
-                next_images = []
-                
-                # Fetch based on action
+            current_action = action_requested
+            action_requested = None
+            action_event.clear()
+
+            config_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
+            def should_abort():
+                if action_requested:
+                    return True
+                current_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
+                return current_mtime > config_mtime
+
+            is_paused = os.path.exists(os.path.expanduser("~/.config/muzwall.pause"))
+            is_unique = settings.get("unique_wallpapers", False)
+            fetch_count = 8 if is_unique else 1
+            next_images = []
+
+            if source:
                 if current_action == "prev":
                     KDEWallpaperSetter.write_status("Fetching previous wallpaper...", "info")
                     for _ in range(fetch_count):
@@ -185,31 +187,66 @@ def main():
                     if not next_images:
                         KDEWallpaperSetter.write_status("No valid images found.", "error")
 
-                # Apply wallpapers if we found any
+                # Apply wallpaper via KDE Setter
                 if next_images:
+                    primary_image = next_images[0]
+                    filename = os.path.basename(primary_image)
+
+                    # Kick off palette extraction in the background FIRST so it
+                    # overlaps set_wallpaper, which itself decodes the full-res
+                    # image for the smart/blur/dynamic border pipeline. On the
+                    # multi-megabyte PNGs that rotation regularly hits, this
+                    # hides ~260-400ms of decode behind the wallpaper change.
+                    palette_payload: dict = {}
+                    palette_thread = None
+                    if theme_sync and DesktopThemeOrchestrator:
+                        palette_thread = threading.Thread(
+                            target=lambda: palette_payload.update(
+                                palette=DesktopThemeOrchestrator.palette_for_image(primary_image)
+                            ),
+                            daemon=True,
+                        )
+                        palette_thread.start()
+
                     success = KDEWallpaperSetter.set_wallpaper(
-                        image_paths=next_images, 
-                        mode=scale_mode, 
-                        border_color=border_color
-                        
+                        image_paths=next_images,
+                        mode=scale_mode,
+                        border_color=border_color,
                     )
                     if success:
-                        primary_image = next_images[0]
-                        filename = os.path.basename(primary_image)
+                        if theme_sync and DesktopThemeOrchestrator:
+                            try:
+                                if palette_thread:
+                                    palette_thread.join()
+                                palette = palette_payload.get("palette")
+                                if palette is not None:
+                                    theme_report = DesktopThemeOrchestrator.sync_from_palette(palette)
+                                else:
+                                    # Background extraction failed; retry in-line.
+                                    theme_report = DesktopThemeOrchestrator.sync_from_image(primary_image)
+                                took = theme_report.get("took_ms")
+                                timing = f" in {took}ms" if took is not None else ""
+                                print(
+                                    f"Theme synchronized from {filename} "
+                                    f"(hue={theme_report['hue']}, accent={theme_report['accent']}){timing}."
+                                )
+                            except Exception as error:
+                                # A theme consumer must never make wallpaper rotation fail.
+                                print(f"⚠️ Theme synchronization error: {error}")
+
                         msg = f"Wallpaper changed to {filename}"
                         if len(next_images) > 1:
                             msg += f" (+ {len(next_images)-1} others)"
-                            
+
                         KDEWallpaperSetter.write_status(msg, "success", primary_image)
-                        
+
+                        # Desktop Notifications
                         if settings.get("show_notifications", False):
                             try:
                                 env = os.environ.copy()
                                 if "DISPLAY" not in env: env["DISPLAY"] = ":0"
                                 notif_cmd = ["notify-send", "Muzwall", msg, "-i", primary_image, "-t", "3000"]
-                                res = subprocess.run(notif_cmd, env=env, capture_output=True, text=True)
-                                if res.returncode != 0:
-                                    print(f"⚠️ Failed to send notification: {res.stderr.strip()}")
+                                subprocess.run(notif_cmd, env=env, capture_output=True, text=True)
                             except Exception as e:
                                 print(f"⚠️ Notification execution error: {e}")
                     else:
@@ -217,15 +254,10 @@ def main():
             else:
                 print(f"No valid plugin configured for: {plugin_name}")
                 if current_action:
-                    # Let the CLI know immediately instead of making it hang/timeout
                     KDEWallpaperSetter.write_status(f"Invalid plugin: {plugin_name}", "error")
 
-            # Sleep in 0.2s increments
-            sleep_ticks = int(interval * 5)
-            for _ in range(sleep_ticks):
-                if action_requested:
-                    break
-                time.sleep(0.2)
+            # Microsecond wake-up wait with timeout interval (Replaces time.sleep)
+            action_event.wait(timeout=interval)
 
     except KeyboardInterrupt:
         restore_wallpaper_and_exit()
