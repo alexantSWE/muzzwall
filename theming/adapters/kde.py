@@ -1,7 +1,7 @@
 """Native KDE colour-scheme artifact generation."""
 
 from core.palette import OKLCH, ThemePalette
-from .common import atomic_write, config_home, data_home, run_if_available
+from .common import atomic_write, config_home, data_home, read_config_value, run_if_available
 
 
 def OKLCH_status_palette(lightness, chroma, hue) -> OKLCH:
@@ -160,16 +160,22 @@ inactiveForeground={rgb(palette.fg_muted)}
             # Write the accent into kdeglobals BEFORE applying the scheme so
             # Plasma 6 re-reads it as part of the reload. Without this the
             # accent stays stale in the running session until logout.
-            accent_ok, accent_message = run_if_available([
-                "kwriteconfig6", "--file", "kdeglobals", "--group", "General",
-                "--key", "AccentColor", palette.accent.to_kde_rgb()
-            ])
+            accent_kde = palette.accent.to_kde_rgb()
+            if read_config_value(config_home() / "kdeglobals", "General", "AccentColor") != accent_kde:
+                accent_ok, accent_message = run_if_available([
+                    "kwriteconfig6", "--file", "kdeglobals", "--group", "General",
+                    "--key", "AccentColor", accent_kde
+                ])
+            else:
+                accent_ok, accent_message = True, "already set"
             # Native wallpaper accent extraction would otherwise fight the
-            # palette chosen by Muzwall on the next Plasma refresh.
-            run_if_available([
-                "kwriteconfig6", "--file", "kdeglobals", "--group", "General",
-                "--key", "accentColorFromWallpaper", "false"
-            ])
+            # palette chosen by Muzwall on the next Plasma refresh. This key
+            # is static after Muzwall takes over; don't re-spawn for it.
+            if read_config_value(config_home() / "kdeglobals", "General", "accentColorFromWallpaper") != "false":
+                run_if_available([
+                    "kwriteconfig6", "--file", "kdeglobals", "--group", "General",
+                    "--key", "accentColorFromWallpaper", "false"
+                ])
             ok, message = run_if_available(["plasma-apply-colorscheme", scheme_name])
             result.update({
                 "activated": ok,

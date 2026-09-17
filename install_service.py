@@ -22,7 +22,8 @@ def install_systemd_service():
     # Notice we set PYTHONUNBUFFERED=1 so logs appear in journalctl immediately
     service_content = f"""[Unit]
 Description=Muzwall - KDE Dynamic Wallpaper Daemon
-After=plasma-workspace.target
+PartOf=graphical-session.target
+After=graphical-session.target
 
 [Service]
 Type=simple
@@ -32,25 +33,24 @@ Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5
 
-# Send SIGTERM on stop, which our daemon catches to restore the wallpaper
 KillSignal=SIGTERM
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 """
 
     try:
         with open(service_file_path, "w") as f:
             f.write(service_content)
-        
+
         print(f"Service file generated at: {service_file_path}")
         print("Applying systemd configurations...")
-        
+
         # Automatically run the systemctl commands
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "--user", "enable", "muzwall.service"], check=True)
         subprocess.run(["systemctl", "--user", "start", "muzwall.service"], check=True)
-        
+
         print("\nSuccess! Muzwall is now running in the background.")
         print("To view the live logs at any time, run:")
         print("  journalctl --user -u muzwall.service -f")

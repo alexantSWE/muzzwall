@@ -304,7 +304,7 @@ class KDEWallpaperSetter:
             return False
 
         final_paths, fill_modes, hex_colors = [], [], []
-        disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
+        disp_w = disp_h = None
 
         # Shared Memory (RAM Disk) directory
         ram_dir = "/dev/shm/muzwall" if os.path.exists("/dev/shm") else os.path.expanduser("~/.cache/muzwall")
@@ -315,11 +315,27 @@ class KDEWallpaperSetter:
             current_color = border_color if border_color.startswith("#") else "#000000"
             final_path = path
 
+            # Decoding the full-resolution image is the single most expensive
+            # step of a rotation (~100-400ms on multi-MB wallpapers). It is
+            # only needed when the pixel data will actually be inspected:
+            # smart-mode analysis, a blurred border, or an ambient dynamic
+            # border. Plain fill/stretch (or a static hex border) can feed the
+            # original file straight to Plasma and never touch the decoder.
+            border_kind = border_color.lower()
+            needs_pixels = current_mode == "smart" or (
+                border_kind in ("blur", "dynamic") and current_mode not in ("fill", "stretch")
+            )
+            needs_bounds = current_mode == "smart" or (
+                border_kind == "blur" and current_mode in ("fit", "center")
+            )
+
             # 1. OpenCV Accelerated Path
             if HAS_CV2:
                 try:
-                    img = cv2.imread(path)
+                    img = cv2.imread(path) if needs_pixels else None
                     if img is not None:
+                        if needs_bounds and disp_w is None:
+                            disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
                         needs_padding = False
                         if current_mode == "smart":
                             current_mode, needs_padding = KDEWallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
@@ -338,8 +354,10 @@ class KDEWallpaperSetter:
                     print(f"Smart processing error (CV2): {e}")
 
             # 2. Pillow Fallback Path
-            elif Image and ImageFilter:
+            elif Image and ImageFilter and needs_pixels:
                 try:
+                    if needs_bounds and disp_w is None:
+                        disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
                     with Image.open(path) as img:
                         w, h = img.size
                         needs_padding = False

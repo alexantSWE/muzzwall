@@ -26,8 +26,15 @@ class KittyAdapter:
     @classmethod
     def apply(cls, palette: ThemePalette, activate: bool = True) -> dict[str, str | bool]:
         path = config_home() / "kitty" / "muzwall-theme.conf"
-        atomic_write(path, cls.render(palette))
         result: dict[str, str | bool] = {"artifact": str(path), "activated": False}
+        rendered = cls.render(palette)
+        try:
+            if path.read_text(encoding="utf-8") == rendered:
+                result["include"] = f"include {path}"
+                return result
+        except OSError:
+            pass
+        atomic_write(path, rendered)
         if activate:
             kitty_conf = path.parent / "kitty.conf"
             marker = "# muzwall:theme"

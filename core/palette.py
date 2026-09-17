@@ -18,6 +18,12 @@ except ImportError:
     cv2 = None
     HAS_CV2 = False
 
+try:
+    from turbojpeg import TurboJPEG, TJPixelFormat
+    _TURBOJPEG = TurboJPEG()
+except Exception:
+    _TURBOJPEG = None
+
 
 def _srgb_to_linear(channel: int) -> float:
     value = max(0.0, min(255.0, float(channel))) / 255.0
@@ -145,9 +151,9 @@ class ChromaticExtractor:
         if len(oklch_pixels) < k:
             return fallback
 
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1.0)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         _, labels, centers = cv2.kmeans(
-            oklch_pixels.astype(np.float32), k, None, criteria, 10,
+            oklch_pixels.astype(np.float32), k, None, criteria, 2,
             cv2.KMEANS_PP_CENTERS,
         )
 
@@ -156,6 +162,69 @@ class ChromaticExtractor:
         cluster_chroma = centers[:, 1]  # chroma column
         best = int(np.argmax(cluster_chroma * label_counts))
         return round(float(centers[best, 2]) % 360.0, 1)  # hue column
+
+    @staticmethod
+    def _is_jpeg_byte_stream(data: bytes) -> bool:
+        return len(data) > 3 and data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF
+
+    @staticmethod
+    def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+        """Return (width, height) scanned from the SOF marker, without decoding."""
+        index = 2
+        length = len(data)
+        while index + 8 < length:
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            index += 2
+            if marker == 0xFF or 0xD0 <= marker <= 0xD7 or marker == 0x01:
+                continue
+            if marker in (0xD9, 0xDA):
+                break
+            segment = (data[index] << 8) | data[index + 1]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if segment >= 7 and index + 6 < length:
+                    return (
+                        (data[index + 5] << 8) | data[index + 6],
+                        (data[index + 3] << 8) | data[index + 4],
+                    )
+            index += segment
+        return None
+
+    @classmethod
+    def _read_thumbnail(cls, image_path: str, size: int = 64):
+        """Decode a `size`x`size` RGB thumbnail as cheaply as possible.
+
+        JPEGs are DCT-scaled down to ~the target size by libturbojpeg (no
+        full-res decode, several times faster than a normal read); anything
+        else rides OpenCV's 1/8 reduced read. JPEGs that fail to parse fall
+        back to the OpenCV path, which mirrors the pre-acceleration behaviour.
+        """
+        if _TURBOJPEG is not None:
+            try:
+                with open(image_path, "rb") as stream:
+                    data = stream.read()
+                if cls._is_jpeg_byte_stream(data):
+                    dimensions = cls._jpeg_dimensions(data)
+                    scaling = (1, 1)
+                    if dimensions is not None:
+                        largest = max(dimensions)
+                        denominator = 1
+                        while denominator < 8 and largest // (denominator * 2) >= size:
+                            denominator *= 2
+                        scaling = (1, denominator)
+                    decoded = _TURBOJPEG.decode(data, pixel_format=TJPixelFormat.RGB, scaling_factor=scaling)
+                    thumbnail = cv2.resize(decoded, (size, size), interpolation=cv2.INTER_AREA)
+                    return thumbnail
+            except Exception:
+                pass
+
+        image = cv2.imread(image_path, cv2.IMREAD_REDUCED_COLOR_8)
+        if image is None:
+            return None
+        thumbnail = cv2.resize(image, (size, size), interpolation=cv2.INTER_AREA)
+        return cv2.cvtColor(thumbnail, cv2.COLOR_BGR2RGB)
 
     @classmethod
     def extract_hue(cls, image_path: str, fallback: float = 285.0) -> float:
@@ -172,16 +241,14 @@ class ChromaticExtractor:
         try:
             import numpy as np
 
-            # Wallpapers can be 8K / multi-megabyte files; a 1/8 decode is
-            # plenty for a 128x128 perceptual thumbnail and gives libjpeg
-            # (DCT-scale) a ~3x head start over a full-res read.
-            img = cv2.imread(image_path, cv2.IMREAD_REDUCED_COLOR_8)
-            if img is None:
+            thumb = cls._read_thumbnail(image_path, 64)
+            if thumb is None:
                 return fallback
 
-            thumb = cv2.resize(img, (128, 128), interpolation=cv2.INTER_AREA)
-            rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB).reshape(-1, 3)
-            sampled = rgb[::4].astype(np.float64) / 255.0
+            # A 64x64 thumbnail (4096 pixels) carries the same perceptual
+            # weight as the old 128x128 -> [::4] sample while costing a
+            # fraction of the resize; skip the subsample pass entirely.
+            sampled = thumb.reshape(-1, 3).astype(np.float64) / 255.0
 
             # Exact vectorized port of srgb_to_oklch(): decode only the
             # subsampled pixels in numpy instead of walking them in Python.
