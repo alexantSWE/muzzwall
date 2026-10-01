@@ -2,11 +2,13 @@
 import unittest
 import os
 import json
+import sys
+import tempfile
 from unittest.mock import patch, mock_open, MagicMock
 
 # Import the modules we want to test
 from core.config import ConfigManager, CONFIG_PATH
-from core.setter import KDEWallpaperSetter
+from core.setter import KDEWallpaperSetter, _session_env, _set_wallpaper_noctalia
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
 import cli
@@ -27,59 +29,143 @@ class TestConfigManager(unittest.TestCase):
         self.assertIn("settings", config)
         self.assertEqual(config["settings"]["interval_seconds"], 60)
 
-    @patch("builtins.open", new_callable=mock_open)
-    def test_save_success(self, mock_file):
-        test_data = {"test": "data"}
-        result = ConfigManager.save(test_data)
-        self.assertTrue(result)
-        mock_file.assert_called_once_with(CONFIG_PATH, "w")
+    def test_save_round_trips(self):
+        """Save to a real temp path: save() writes a .tmp then os.replace's it,
+        and mocking open() made the rename fail against a nonexistent file."""
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "config.json")
+            with patch("core.config.CONFIG_PATH", target):
+                self.assertTrue(ConfigManager.save({"settings": {"interval_seconds": 60}}))
+                self.assertEqual(ConfigManager.load()["settings"]["interval_seconds"], 60)
+            self.assertFalse(os.path.exists(target + ".tmp"), "temp file left behind")
 
-class TestKDEWallpaperSetter(unittest.TestCase):
+    def test_save_reports_failure_instead_of_raising(self):
+        with patch("core.config.CONFIG_PATH", "/proc/muzwall-nope/config.json"):
+            self.assertFalse(ConfigManager.save({"a": 1}))
+
+class TestWallpaperSetter(unittest.TestCase):
 
     def test_hex_to_rgb(self):
         self.assertEqual(KDEWallpaperSetter.hex_to_rgb("#000000"), "0,0,0")
         self.assertEqual(KDEWallpaperSetter.hex_to_rgb("#FFFFFF"), "255,255,255")
 
-    @patch("os.path.exists")
-    @patch("subprocess.run")
-    def test_set_wallpaper_success(self, mock_subprocess, mock_exists):
-        mock_exists.return_value = True
+    @patch("core.setter._running_under_kde", return_value=False)
+    @patch("core.setter._set_wallpaper_noctalia", return_value=True)
+    @patch("os.path.exists", return_value=True)
+    def test_set_wallpaper_uses_noctalia_on_niri(self, _exists, _noctalia, _kde):
         result = KDEWallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit")
         self.assertTrue(result)
-        mock_subprocess.assert_called_once()
-        
-    @patch("os.path.exists")
-    def test_get_current_wallpaper(self, mock_exists):
-        fake_appletsrc = """
-[Containments][1][Wallpaper][org.kde.image][General]
-Color=45,60,75
-FillMode=1
-Image=file:///home/user/pic.png
-"""
-        mock_exists.return_value = True
-        with patch("builtins.open", mock_open(read_data=fake_appletsrc)):
-            state = KDEWallpaperSetter.get_current_wallpaper()
+        _noctalia.assert_called_once()
 
+    def test_set_wallpaper_rejects_missing_files(self):
+        self.assertFalse(KDEWallpaperSetter.set_wallpaper("/nope/missing.jpg"))
+
+    @patch("core.setter._running_under_kde", return_value=False)
+    @patch("shutil.which", return_value=None)
+    def test_set_wallpaper_fails_without_a_compositor_bridge(self, _which, _kde):
+        """Neither Plasma nor Noctalia available must fail loudly, not silently."""
+        self.assertFalse(KDEWallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit"))
+
+    @patch("core.setter._running_under_kde", return_value=False)
+    @patch("os.path.exists")
+    @patch("subprocess.run")
+    def test_get_current_wallpaper_from_noctalia(self, mock_subprocess, mock_exists, _kde):
+        mock_exists.return_value = True
+        mock_subprocess.return_value = MagicMock(
+            returncode=0, stdout="/home/user/pic.png\n", stderr=""
+        )
+        state = KDEWallpaperSetter.get_current_wallpaper()
         self.assertEqual(state.get("image"), "/home/user/pic.png")
-        self.assertEqual(state.get("mode"), "fit")
+
+    @patch("core.setter._running_under_kde", return_value=False)
+    @patch("os.path.exists")
+    @patch("subprocess.run")
+    def test_get_current_wallpaper_empty_when_bridge_is_silent(self, mock_subprocess, mock_exists, _kde):
+        """A bridge that answers with garbage must not be trusted as a path."""
+        mock_exists.return_value = True
+        mock_subprocess.return_value = MagicMock(
+            returncode=0, stdout="error: not running\n", stderr=""
+        )
+        self.assertEqual(KDEWallpaperSetter.get_current_wallpaper(), {})
+
+
+class TestSessionEnv(unittest.TestCase):
+    """The daemon's environment bug: systemd gives it no WAYLAND_DISPLAY."""
+
+    def test_recovers_wayland_display_from_systemd(self):
+        stdout = "XDG_RUNTIME_DIR=/run/user/1000\nWAYLAND_DISPLAY=wayland-1\nPATH=/usr/bin\n"
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=stdout)):
+            env = _session_env()
+        self.assertEqual(env.get("WAYLAND_DISPLAY"), "wayland-1")
+        self.assertEqual(env.get("XDG_RUNTIME_DIR"), "/run/user/1000")
+
+    def test_never_overwrites_a_value_we_already_have(self):
+        """An inherited value wins; a real session must not be second-guessed."""
+        stdout = "WAYLAND_DISPLAY=wayland-9\n"
+        with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-1"}, clear=True), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=stdout)):
+            env = _session_env()
+        self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-1")
+
+    def test_survives_systemctl_failure(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("subprocess.run", side_effect=FileNotFoundError("systemctl")):
+            self.assertIsInstance(_session_env(), dict)
+
+    def test_noctalia_call_is_given_the_recovered_env(self):
+        """Regression guard: the fix is only real if env= is actually passed."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            if "show-environment" in cmd:
+                return MagicMock(returncode=0, stdout="WAYLAND_DISPLAY=wayland-1\n")
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return MagicMock(returncode=0, stdout="ok\n", stderr="")
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("shutil.which", return_value="/usr/bin/noctalia"), \
+             patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(_set_wallpaper_noctalia(["/tmp/pic.jpg"]))
+
+        self.assertEqual(captured["cmd"][:3], ["/usr/bin/noctalia", "msg", "wallpaper-set"])
+        self.assertEqual(captured["env"].get("WAYLAND_DISPLAY"), "wayland-1")
+
+    def test_noctalia_rejection_is_reported(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("shutil.which", return_value="/usr/bin/noctalia"), \
+             patch("subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="error: noctalia is not running\n", stderr="")):
+            self.assertFalse(_set_wallpaper_noctalia(["/tmp/pic.jpg"]))
 
 class TestLocalFolderSource(unittest.TestCase):
 
-    @patch("os.path.exists")
-    @patch("os.listdir")
-    def test_fetch_next_sequential(self, mock_listdir, mock_exists):
-        mock_exists.return_value = True
-        mock_listdir.return_value = ["a.jpg", "b.png"]
-        
-        # persist_history=False so the test strictly uses memory without trying to hit the OS filesystem logic
-        source = LocalFolderSource("/fake/folder", order="sequential", persist_history=False)
-        # Ensure it loops correctly
-        self.assertEqual(source.fetch_next(), "/fake/folder/a.jpg")
-        self.assertEqual(source.fetch_next(), "/fake/folder/b.png")
-        self.assertEqual(source.fetch_next(), "/fake/folder/a.jpg")
-        
-        # Ensure prev goes back correctly
-        self.assertEqual(source.fetch_prev(), "/fake/folder/b.png")
+    def test_fetch_next_sequential(self):
+        """A real directory, because the scanner uses os.scandir, not os.listdir.
+
+        Mocking os.listdir used to pass while the real code path went through
+        os.scandir and hit a nonexistent /fake/folder.
+        """
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            names = []
+            for name in ("a.jpg", "b.png"):
+                path = os.path.join(directory, name)
+                # Real pixels: the plugin opens and verifies each candidate, so
+                # a stub file header would be rejected as corrupted.
+                Image.new("RGB", (8, 8), (20, 30, 40)).save(path)
+                names.append(path)
+
+            source = LocalFolderSource(directory, order="sequential", persist_history=False)
+            self.assertEqual(source.fetch_next(), names[0])
+            self.assertEqual(source.fetch_next(), names[1])
+            self.assertEqual(source.fetch_next(), names[0], "should wrap around")
+            self.assertEqual(source.fetch_prev(), names[1], "prev must walk backwards")
+
+    def test_missing_folder_yields_nothing(self):
+        source = LocalFolderSource("/nonexistent-muzwall-folder", order="sequential", persist_history=False)
+        self.assertIsNone(source.fetch_next())
 
 class TestWallhavenSource(unittest.TestCase):
 
@@ -87,29 +173,46 @@ class TestWallhavenSource(unittest.TestCase):
         source = WallhavenSource()
         self.assertEqual(source.max_size_bytes, 20.0 * 1024 * 1024)
 
-    @patch("urllib.request.urlopen")
-    def test_fetch_api_batch_filtering(self, mock_urlopen):
+    def test_fetch_api_batch_filtering(self):
+        """Two things this test got wrong, both of which made it assert nothing.
+
+        The plugin builds an opener (to honour the proxy setting) and calls
+        opener.open(), so patching urllib.request.urlopen never intercepted
+        anything -- the request escaped to the network. It also reads the real
+        config.json for the proxy, so on a machine with a proxy configured the
+        "mocked" call died with Connection refused.
+        """
         mock_response = MagicMock()
-        # Mock JSON: one 5MB image (kept), one 25MB image (discarded based on 20MB limit)
         fake_json = json.dumps({
             "data": [
                 {"path": "https://fake/1.jpg", "file_size": 5 * 1024 * 1024},
-                {"path": "https://fake/2.jpg", "file_size": 25 * 1024 * 1024}
+                {"path": "https://fake/2.jpg", "file_size": 25 * 1024 * 1024},
             ]
         })
-        mock_response.read.return_value = fake_json.encode('utf-8')
+        mock_response.read.return_value = fake_json.encode("utf-8")
         mock_response.__enter__.return_value = mock_response
-        mock_urlopen.return_value = mock_response
 
-        # We set sorting to "toplist" to force the pagination code block to execute (testing the str() fix)
-        source = WallhavenSource(max_size_mb=20.0, sorting="toplist")
-        source._fetch_api_batch()
-        
-        # Ensure the queue only contains the valid image that was under the size limit
-        self.assertEqual(len(source.image_queue), 1)
-        self.assertEqual(source.image_queue[0], "https://fake/1.jpg")
-        # Ensure the page iterator advanced successfully
+        opener = MagicMock()
+        opener.open.return_value = mock_response
+
+        # sorting="toplist" exercises the pagination advance.
+        with patch("urllib.request.build_opener", return_value=opener), \
+             patch("core.config.ConfigManager.load", return_value={"settings": {}}):
+            source = WallhavenSource(max_size_mb=20.0, sorting="toplist")
+            source._fetch_api_batch()
+
+        opener.open.assert_called_once()
+        self.assertEqual(source.image_queue, ["https://fake/1.jpg"])
         self.assertEqual(source.current_page, 2)
+
+    def test_fetch_api_batch_survives_network_failure(self):
+        """A dead proxy must not raise out of the batch fetch."""
+        with patch("urllib.request.build_opener", side_effect=OSError("no proxy")), \
+             patch("core.config.ConfigManager.load", return_value={"settings": {}}), \
+             patch("time.sleep"):
+            source = WallhavenSource(max_size_mb=20.0)
+            source._fetch_api_batch()
+        self.assertEqual(source.image_queue, [])
 
 class TestCLICommands(unittest.TestCase):
 
@@ -136,17 +239,18 @@ class TestCLICommands(unittest.TestCase):
     @patch("cli.ConfigManager.load")
     @patch("cli.ConfigManager.save")
     def test_handle_config_wallhaven(self, mock_save, mock_load):
-        import argparse
-        mock_load.return_value = {}
-        # Simulate the argparse namespace exactly as it comes from CLI
-        args = argparse.Namespace(
-            interval=None, mode=None, border=None, notify=None, unique=None, plugin=None,
-            folder=None, order=None, recursive=None, persist=None,
-            wh_query="cyberpunk", wh_categories=None, wh_purity=None, wh_sorting=None, 
-            wh_apikey=None, wh_maxsize=30.0
-        )
-        cli.handle_config(args)
-        
+        # handle_config() bails out early on an empty config, so hand it a
+        # realistic one. This test used to pass {} here and failed on the
+        # assert_called_once below rather than on anything it meant to check.
+        mock_load.return_value = {"settings": {}, "plugins": {}}
+        # Drive the real argument parser instead of hand-listing every attribute.
+        # Hand-lists rot the moment a flag is added, and the failure surfaces
+        # as an AttributeError on some unrelated flag.
+        with patch.object(sys, "argv", [
+            "muzwall", "config", "--wh-query", "cyberpunk", "--wh-maxsize", "30.0",
+        ]):
+            cli.main()
+
         mock_save.assert_called_once()
         saved_config = mock_save.call_args[0][0]
         

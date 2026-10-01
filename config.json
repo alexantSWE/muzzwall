@@ -18,7 +18,6 @@
         "border_color": "dynamic",
         "show_notifications": false,
         "proxy": "http://127.0.0.1:12334",
-        "accent_sync": true,
         "theme_sync": true
     }
 }

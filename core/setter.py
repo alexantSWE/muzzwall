@@ -3,6 +3,7 @@ import subprocess
 import os
 import argparse
 import json
+import shutil
 
 # Try importing OpenCV for GPU/OpenCL acceleration; fallback to Pillow if absent
 try:
@@ -103,7 +104,28 @@ class KDEWallpaperSetter:
 
     @staticmethod
     def get_current_wallpaper() -> dict:
-        """Parses the KDE desktop applet config to recover active wallpaper settings."""
+        """Recover the active wallpaper settings for the current session."""
+        # Non-Plasma sessions must not read the stale KDE applet config, or a
+        # shutdown "restore" would hand us a wallpaper path from KDE days.
+        if not _running_under_kde():
+            exe = shutil.which("noctalia")
+            if not exe:
+                return {}
+            try:
+                res = subprocess.run([exe, "msg", "wallpaper-get"],
+                                     capture_output=True, text=True, timeout=5,
+                                     env=_session_env())
+                path = res.stdout.strip()
+                # noctalia prints diagnostics like "error: ..." on stdout while
+                # still exiting 0, so require an absolute path as well as an
+                # existing file before believing it.
+                if (res.returncode == 0 and os.path.isabs(path)
+                        and os.path.exists(path)):
+                    return {"image": path, "mode": "fill", "color": "#000000"}
+            except Exception:
+                pass
+            return {}
+
         config_path = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
         if not os.path.exists(config_path): return {}
         state = {"image": "", "mode": "fill", "color": "#000000"}
@@ -131,19 +153,6 @@ class KDEWallpaperSetter:
             if state["image"]: return state
         except Exception: pass
         return {}
-
-    @staticmethod
-    def set_accent_color_from_wallpaper(enable: bool):
-        val = "true" if enable else "false"
-        for cmd in ["kwriteconfig6", "kwriteconfig5"]:
-            try:
-                subprocess.run([cmd, "--file", "kdeglobals", "--group", "General", "--key", "accentColorFromWallpaper", val], check=True, capture_output=True)
-                return True
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-            except Exception as e:
-                print(f"⚠️ Failed to update KDE accent color: {e}")
-        return False
 
     @staticmethod
     def get_backup_path() -> str: return os.path.expanduser("~/.config/muzwall_backup.json")
@@ -416,13 +425,95 @@ class KDEWallpaperSetter:
         }}
         """
         try:
-            subprocess.run(["dbus-send", "--session", "--dest=org.kde.plasmashell",
-                            "--type=method_call", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript",
-                            f"string:{js_script}"], check=True, capture_output=True, timeout=5)
-            return True
+            if _running_under_kde():
+                # NOTE: dbus-send only surfaces a "ServiceUnknown" error when it
+                # actually waits for the reply. Without --print-reply it exits 0
+                # immediately, so check=True never fired and set_wallpaper()
+                # falsely reported success even with no plasmashell running.
+                subprocess.run(
+                    ["dbus-send", "--session", "--print-reply", "--reply-timeout=5000",
+                     "--dest=org.kde.plasmashell",
+                     "--type=method_call", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript",
+                     f"string:{js_script}"],
+                    check=True, capture_output=True, timeout=10,
+                )
+                return True
+
+            # Non-Plasma session (e.g. Niri + Noctalia): no plasmashell exists,
+            # so talk to the shell that actually draws our wallpaper.
+            return _set_wallpaper_noctalia(final_paths)
         except Exception as e:
-            print(f"Failed to set KDE wallpaper: {e}")
+            print(f"Failed to set wallpaper: {e}")
             return False
+
+
+def _running_under_kde() -> bool:
+    """True when a real KDE Plasma session (plasmashell) is behind us."""
+    if os.environ.get("KDE_FULL_SESSION"):
+        return True
+    if os.environ.get("XDG_CURRENT_DESKTOP", "").lower() != "kde":
+        return False
+    return subprocess.run(
+        ["busctl", "--user", "status", "org.kde.plasmashell"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def _session_env() -> dict:
+    """This process's environment, topped up from the login session.
+
+    The daemon runs as a systemd user unit, which starts it with a minimal
+    environment (PATH=/usr/local/bin:/usr/bin and no WAYLAND_DISPLAY). Noctalia
+    names its IPC socket after the display -- ``noctalia-wayland-1.sock`` -- and
+    derives that name from WAYLAND_DISPLAY, so without this it reports "noctalia
+    is not running" even though it is, and every wallpaper rotation silently
+    fails. systemd still has the real values parked in the manager environment,
+    so pull them from there instead of guessing.
+    """
+    env = os.environ.copy()
+    try:
+        res = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return env
+    for line in res.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        if key in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"):
+            # Never clobber a value we were actually given.
+            env.setdefault(key, val)
+    return env
+
+
+def _set_wallpaper_noctalia(paths: list) -> bool:
+    """Apply wallpapers through the Noctalia IPC bridge (Niri, Sway, Hyprland).
+
+    Noctalia persists the choice, so the wallpaper survives restarts.
+    """
+    exe = shutil.which("noctalia")
+    if not exe:
+        print("Noctalia not found; cannot apply wallpaper.")
+        return False
+
+    ok = True
+    env = _session_env()
+    for path in paths:
+        try:
+            res = subprocess.run(
+                [exe, "msg", "wallpaper-set", path],
+                capture_output=True, text=True, timeout=5, env=env,
+            )
+            if res.returncode != 0 or "ok" not in res.stdout.strip().lower():
+                print(f"Noctalia rejected wallpaper: {res.stderr.strip() or res.stdout.strip()}")
+                ok = False
+        except Exception as e:
+            print(f"Noctalia wallpaper call failed: {e}")
+            ok = False
+    return ok
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

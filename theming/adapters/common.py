@@ -96,11 +96,10 @@ def get_session_env() -> dict:
 
 
 def read_config_value(path: Path | str, group: str, key: str, default: str = "") -> str:
-    """Return ``key``'s value under ``[group]`` in an INI-style KDE config file.
+    """Return ``key``'s value under ``[group]`` in an INI-style config file.
 
     Lets adapters skip write + reload work that is already on disk, so
-    per-rotation kwriteconfig6 subprocesses only fire when the value really
-    changes.
+    per-rotation reload subprocesses only fire when the value really changes.
     """
     current: str = ""
     try:

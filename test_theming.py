@@ -5,12 +5,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.palette import OKLCH, ThemePalette, ChromaticExtractor, contrast_ratio, srgb_to_oklch
+from theming.adapters.btop import BtopAdapter
+from theming.adapters.fastfetch import FastfetchAdapter
 from theming.adapters.gtk import GTKAdapter
-from theming.adapters.kde import KDEColorAdapter
 from theming.adapters.kitty import KittyAdapter
-from theming.adapters.klassy import KlassyAdapter
-from theming.adapters.kwin import KWinPhysicsAdapter
-from theming.adapters.fonts import FontAdapter
+from theming.adapters.niri import NiriAdapter
+from theming.orchestrator import DesktopThemeOrchestrator
 
 
 class TestPalette(unittest.TestCase):
@@ -29,42 +29,64 @@ class TestPalette(unittest.TestCase):
 
 class TestThemeArtifacts(unittest.TestCase):
     def test_adapters_write_only_under_xdg_homes(self):
+        """Every artifact must land under the injected XDG root, never in $HOME."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_DATA_HOME": str(root / "data")}):
                 palette = ThemePalette(200)
-                KDEColorAdapter.apply(palette)
-                GTKAdapter.apply(palette)
+                gtk = GTKAdapter.apply(palette)
                 kitty = KittyAdapter.apply(palette)
+                niri = NiriAdapter.apply(palette, activate=False)
+                btop = BtopAdapter.apply(palette, activate=False)
+                fastfetch = FastfetchAdapter.apply(palette, activate=False)
 
-            scheme_files = list((root / "data/color-schemes").glob("Muzwall*.colors"))
-            self.assertTrue(scheme_files, "no Muzwall color scheme written")
-            self.assertIn("BackgroundNormal=", scheme_files[0].read_text())
-            self.assertTrue((root / "config/gtk-4.0/muzwall.css").exists())
+                # Everything written so far must be inside the sandbox.
+                written = [*gtk["artifacts"], kitty["artifact"],
+                           niri["artifact"], btop["artifact"], fastfetch["artifact"]]
+                for path in written:
+                    self.assertTrue(
+                        Path(path).exists(),
+                        f"adapter did not produce its artifact: {path}",
+                    )
+
+            self.assertIn("@define-color accent_color", (root / "config/gtk-4.0/muzwall.css").read_text())
             self.assertIn("include", kitty["include"])
+            self.assertIn("focus-ring", (root / "config/niri/muzwall-theme.kdl").read_text())
+            self.assertIn('color_theme = "muzwall"', (root / "config/btop/btop.conf").read_text())
+            self.assertIn('theme_background = false', (root / "config/btop/btop.conf").read_text())
+
+    def test_plasma_adapters_are_gone(self):
+        """The KDE/KWin/Klassy/Font adapters were removed; nothing may re-add them."""
+        names = {name for name, _ in DesktopThemeOrchestrator.ADAPTERS}
+        self.assertEqual(names, {"gtk", "kitty", "niri", "fastfetch", "btop"})
+        for gone in ("kde", "klassy", "kwin", "fonts"):
+            self.assertFalse(hasattr(DesktopThemeOrchestrator, "X11_ADAPTERS"))
+
+    def test_accent_reaches_every_consumer(self):
+        """One palette, one accent: the generated files must not disagree."""
+        palette = ThemePalette(200)
+        accent = palette.accent.to_hex()
+        for rendered in (
+            NiriAdapter.render(palette),
+            BtopAdapter.render(palette),
+        ):
+            self.assertIn(accent, rendered)
 
 
-class TestNewAdapters(unittest.TestCase):
-    def test_klassy_artifact(self):
+class TestAdapterIdempotence(unittest.TestCase):
+    def test_render_is_stable_across_calls(self):
+        palette = ThemePalette(310)
+        for adapter in (NiriAdapter, BtopAdapter, FastfetchAdapter, KittyAdapter):
+            self.assertEqual(adapter.render(palette), adapter.render(palette), adapter.__name__)
+
+    def test_btop_selector_keys_are_repatched_not_duplicated(self):
+        """Re-running the adapter must not append a second color_theme line."""
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config")}):
-                result = KlassyAdapter.apply(ThemePalette(), activate=False)
-            path = Path(result["artifact"])
-            self.assertTrue(path.exists())
-            content = path.read_text()
-            self.assertIn("FrameCustomCornerRadius=12", content)
-            self.assertIn("ThinWindowOutlineStyleActive=WindowOutlineCustomColor", content)
-
-    def test_fonts_apply_reports_keys(self):
-        # Fonts write to kdeglobals; only assert the adapter returns its mapping shape.
-        result = FontAdapter.apply()
-        self.assertIn("font", result)
-        self.assertIn("fixed", result)
-
-    def test_kwin_apply_returns_dict(self):
-        result = KWinPhysicsAdapter.apply(activate=False)
-        self.assertIn("animation", result)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(directory)}):
+                BtopAdapter.apply(ThemePalette(200), activate=False)
+                BtopAdapter.apply(ThemePalette(120), activate=False)
+            conf = (Path(directory) / "btop" / "btop.conf").read_text()
+            self.assertEqual(conf.count("color_theme ="), 1, conf)
 
 
 class TestChromaticExtractor(unittest.TestCase):

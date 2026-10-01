@@ -81,7 +81,7 @@ def show_status():
         interval = config.get("settings", {}).get("interval_seconds", "Unknown")
         notifs = config.get("settings", {}).get("show_notifications", False)
         unique = config.get("settings", {}).get("unique_wallpapers", False)
-        accent = config.get("settings", {}).get("accent_sync", False)
+        theme_sync = config.get("settings", {}).get("theme_sync", False)
         proxy = config.get("settings", {}).get("proxy", "None")
         
         print(f"\n=== Configuration ===")
@@ -89,7 +89,7 @@ def show_status():
         print(f"⏱️  Interval      : {interval} seconds")
         print(f"🔔 Notifications : {'ON' if notifs else 'OFF'}")
         print(f"🔀 Unique Screens: {'ON' if unique else 'OFF'} (Multi-Monitor/Activity)")
-        print(f"🎨 Accent Sync   : {'ON' if accent else 'OFF'}")
+        print(f"🎨 Theme Sync    : {'ON' if theme_sync else 'OFF'} (niri/kitty/btop/fastfetch)")
         print(f"🌐 Proxy         : {proxy}")
         print(f"{'⏸️  Rotation      : PAUSED' if is_paused else '▶️  Rotation      : ACTIVE'}")
         
@@ -158,11 +158,7 @@ def handle_config(args):
         config.setdefault("settings", {})["unique_wallpapers"] = val
         print(f"✅ Set unique_wallpapers to {val}.")
         updated = True
-    if args.accent is not None:
-        val = args.accent.lower() == "true"
-        config.setdefault("settings", {})["accent_sync"] = val
-        print(f"✅ Set KDE Accent Sync to {val}.")
-        updated = True
+    
     theme_sync = getattr(args, "theme_sync", None)
     if theme_sync is not None:
         val = theme_sync.lower() == "true"
@@ -245,15 +241,15 @@ def toggle_pause(pause_state: bool):
         print("▶️  Muzwall auto-rotation resumed.")
 
 def install_shortcuts():
-    """Generates KDE Desktop Application files so users can easily bind global shortcuts."""
+    """Generates desktop entries and prints the niri binds to trigger them."""
     import stat
     apps_dir = os.path.expanduser("~/.local/share/applications")
     os.makedirs(apps_dir, exist_ok=True)
-    
+
     # Get the absolute path to this CLI script
     cli_path = os.path.abspath(__file__)
-    
-    # FIX: Ensure cli.py is executable! KDE ignores desktop files pointing to non-executables.
+
+    # Launchers execute this directly, so it has to be executable.
     st = os.stat(cli_path)
     os.chmod(cli_path, st.st_mode | stat.S_IEXEC)
     
@@ -272,7 +268,7 @@ Exec={cli_path} {action}
 Icon={meta['icon']}
 Terminal=false
 Type=Application
-Categories=Utility;System;
+Categories=Utility;
 StartupNotify=false
 """
         file_path = os.path.join(apps_dir, f"muzwall-{action}.desktop")
@@ -285,23 +281,217 @@ StartupNotify=false
             print(f"❌ Failed to create shortcut {action}: {e}")
             return
             
-    # Notify Linux and KDE plasma that new desktop entries exist
-    subprocess.run(["update-desktop-database", apps_dir], capture_output=True, stderr=subprocess.DEVNULL)
-    subprocess.run(["kbuildsycoca5"], capture_output=True, stderr=subprocess.DEVNULL) 
-    subprocess.run(["kbuildsycoca6"], capture_output=True, stderr=subprocess.DEVNULL) 
-    
+    # Refresh the launcher's desktop database so the new entries show up in
+    # Noctalia immediately. KBuildSysCoca is gone with Plasma.
+    subprocess.run(["update-desktop-database", apps_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     print("✅ Desktop entries generated successfully!")
-    print("\nHow to bind them in KDE System Settings:")
-    print("1. Open 'System Settings' -> 'Keyboard' -> 'Shortcuts'")
-    print("2. Click 'Add New' (or 'Add Application')")
-    print("3. Search for 'Muzwall'")
-    print("-" * 40)
-    print("💡 IF IT STILL DOES NOT APPEAR, USE THE COMMAND METHOD:")
-    print("KDE allows you to bind terminal commands directly without the application menu!")
-    print("1. In Shortcuts, click 'Add New' -> 'Command' (or 'Custom Shortcut' in Plasma 5)")
-    print(f"2. Paste this exact command for Next:   {cli_path} next")
-    print(f"3. Paste this exact command for Toggle: {cli_path} toggle")
-    print("4. Assign your keys!")
+    print(f"   {apps_dir}/muzwall-next.desktop")
+    print(f"   {apps_dir}/muzwall-prev.desktop")
+    print(f"   {apps_dir}/muzwall-toggle.desktop")
+    print()
+    print("To bind keys in niri, add lines like these to the binds { } block")
+    print("in ~/.config/niri/config.kdl (pick unused combinations):")
+    print("-" * 60)
+    print(f'    Mod+BracketRight {{ spawn "{cli_path}" next; }}')
+    print(f'    Mod+BracketLeft  {{ spawn "{cli_path}" prev; }}')
+    print(f'    Mod+Shift+Slash  {{ spawn "{cli_path}" toggle; }}')
+    print("-" * 60)
+    print("Then run: niri msg action load-config-file")
+    print("(or validate first with: niri validate --config ~/.config/niri/config.kdl)")
+
+
+def _current_wallpaper_path() -> str | None:
+    """Resolve the wallpaper currently on screen, or None."""
+    from core.setter import KDEWallpaperSetter
+
+    state = KDEWallpaperSetter.get_current_wallpaper() or {}
+    image = state.get("image")
+    if image and os.path.isfile(image):
+        return image
+    return None
+
+
+def _nightlight_state_path() -> str:
+    base = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    return os.path.join(base, "muzwall", "nightlight", "state.json")
+
+
+def _remember_daytime_wallpaper(path: str, strength: float) -> None:
+    """Record which wallpaper --moon replaced, so --day can undo it exactly.
+
+    Guessing is not good enough here: once the night render is on screen it is
+    indistinguishable from any other wallpaper, and "newest file in the folder"
+    can easily pick a different picture entirely.
+    """
+    target = _nightlight_state_path()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as stream:
+        json.dump({"daytime_image": path, "strength": strength}, stream, indent=2)
+
+
+def _recalled_daytime_wallpaper() -> str | None:
+    try:
+        with open(_nightlight_state_path(), encoding="utf-8") as stream:
+            state = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    image = state.get("daytime_image")
+    if image and os.path.isfile(image):
+        return image
+    return None
+
+
+def _forget_daytime_wallpaper() -> None:
+    try:
+        os.unlink(_nightlight_state_path())
+    except OSError:
+        pass
+
+
+def _apply_nightlight(strength: float, activate: bool = True) -> dict:
+    """Bake a night wallpaper from the current one and resync the palette.
+
+    The accent is derived from the daytime image and then rotated toward the
+    night anchor, so niri, kitty and fastfetch all cool down alongside the
+    desktop rather than staying at their daytime values.
+    """
+    from core.nightlight import build_night_variant, night_hue
+    from core.palette import ChromaticExtractor, ThemePalette
+    from core.setter import KDEWallpaperSetter
+    from theming.orchestrator import DesktopThemeOrchestrator
+
+    source = _current_wallpaper_path()
+    if source is None:
+        return {"error": "no current wallpaper found"}
+
+    night = build_night_variant(source, strength=strength)
+    if night is None:
+        return {"error": "nightlight render failed", "source": source}
+
+    applied = KDEWallpaperSetter.set_wallpaper([night])
+    if not applied:
+        return {"error": "could not apply the night wallpaper", "source": night}
+
+    # Read the anchor from the *daytime* image, then rotate it toward the night
+    # anchor. Deriving it from the night render alone would do nothing, because
+    # the extractor reports the artwork's hue regardless of how it is tinted.
+    day_hue = ChromaticExtractor.extract_hue(source)
+    cooled = night_hue(day_hue, strength)
+    report = DesktopThemeOrchestrator.sync_from_palette(
+        ThemePalette(cooled), activate_kde=activate
+    )
+    _remember_daytime_wallpaper(source, strength)
+    report["nightlight"] = {
+        "source": source,
+        "image": night,
+        "strength": strength,
+        "day_hue": day_hue,
+        "night_hue": cooled,
+    }
+    return report
+
+
+def _restore_daylight(activate: bool = True) -> dict:
+    """Undo --moon by restoring the wallpaper it replaced.
+
+    Prefers the exact path recorded when --moon ran; falls back to muzwall's
+    own backup and then to the newest non-night file, so this still does
+    something sensible if the state file was lost.
+    """
+    from core.setter import KDEWallpaperSetter
+    from theming.orchestrator import DesktopThemeOrchestrator
+
+    candidate = _recalled_daytime_wallpaper()
+    if not candidate:
+        backup = KDEWallpaperSetter.load_wallpaper_backup() or {}
+        recorded = backup.get("image")
+        if recorded and os.path.isfile(recorded):
+            candidate = recorded
+    if not candidate:
+        candidate = _newest_daylight_wallpaper()
+
+    if not candidate:
+        return {"error": "could not determine the original wallpaper"}
+
+    if not KDEWallpaperSetter.set_wallpaper([candidate]):
+        return {"error": "could not restore the original wallpaper", "image": candidate}
+
+    report = DesktopThemeOrchestrator.sync_from_image(candidate, activate_kde=activate)
+    _forget_daytime_wallpaper()
+    report["restored"] = candidate
+    return report
+
+
+def _newest_daylight_wallpaper() -> str | None:
+    """Newest image in the configured local folders that is not a night render."""
+    try:
+        from core.config import ConfigManager
+
+        config = ConfigManager().load()
+    except Exception:
+        return None
+
+    plugins = (config or {}).get("plugins", {}) or {}
+    night_dir = os.path.abspath(os.path.join(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+        "muzwall", "nightlight",
+    ))
+
+    best, best_mtime = None, -1.0
+    for plugin in plugins.values():
+        if not isinstance(plugin, dict):
+            continue
+        folder = plugin.get("path") or plugin.get("folder")
+        if not folder or not os.path.isdir(os.path.expanduser(folder)):
+            continue
+        for entry in os.scandir(os.path.expanduser(folder)):
+            if not entry.is_file():
+                continue
+            if os.path.abspath(entry.path).startswith(night_dir):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > best_mtime:
+                best, best_mtime = entry.path, mtime
+    return best
+
+
+def _watch_wallpaper_theme(activate: bool = True, interval: float = 5.0) -> None:
+    """Resync the desktop palette whenever the wallpaper changes.
+
+    Complements the daemon, which only re-derives the palette on its own
+    rotation interval (30 minutes by default). This reacts immediately, which is
+    what you want when switching wallpapers by hand.
+    """
+    from theming.orchestrator import DesktopThemeOrchestrator
+
+    last = None
+    print("Watching the current wallpaper for changes. Ctrl-C to stop.")
+    try:
+        while True:
+            current = _current_wallpaper_path()
+            if current:
+                try:
+                    stamp = os.stat(current).st_mtime_ns
+                except OSError:
+                    stamp = 0
+                marker = (current, stamp)
+                if marker != last:
+                    if last is not None:
+                        print(f"Wallpaper changed: {current}")
+                        report = DesktopThemeOrchestrator.sync_from_image(
+                            current, activate_kde=activate
+                        )
+                        print(f"  accent {report.get('accent')} (hue {report.get('hue')})")
+                    last = marker
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Muzwall CLI - Control the background daemon")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -332,7 +522,6 @@ def main():
     parser_config.add_argument("--unique", type=str, choices=["true", "false"], help="Enable/disable unique wallpapers for multi-monitor/activities")
     parser_config.add_argument("--persist", type=str, choices=["true", "false"], help="Enable/disable remembering history across reboots")
     parser_config.add_argument("--proxy", type=str, help="Set HTTP/HTTPS proxy (e.g., http://127.0.0.1:10809) or 'none' to clear")
-    parser_config.add_argument("--accent", type=str, choices=["true", "false"], help="Enable/disable KDE native Accent Color from wallpaper")
     parser_config.add_argument("--theme-sync", type=str, choices=["true", "false"], help="Enable/disable local wallpaper-driven desktop theme synchronization")
     # Wallhaven Plugin Config
     parser_config.add_argument("--wh-query", type=str, help="Wallhaven search query (e.g., 'cyberpunk', 'nature')")
@@ -343,13 +532,30 @@ def main():
     parser_config.add_argument("--wh-maxsize", type=float, help="Wallhaven max image size in MB (default 20.0)")
 
     subparsers.add_parser("toggle", help="Toggle between paused and resumed rotation")
-    subparsers.add_parser("shortcuts", help="Install KDE desktop shortcuts to bind keys via System Settings")
+    subparsers.add_parser("shortcuts", help="Install desktop entries and print the niri binds to trigger them")
 
     parser_theme = subparsers.add_parser("theme", help="Generate the local Muzwall desktop theme")
     parser_theme.add_argument("--sync", metavar="IMAGE", help="Derive a theme from a local wallpaper")
+    parser_theme.add_argument("--sync-image", metavar="IMAGE", help="Alias for --sync")
     parser_theme.add_argument("--hue", type=float, help="Use an explicit anchor hue instead of an image")
-    parser_theme.add_argument("--init", action="store_true", help="Apply 60Hz physics, KWin effects and typography once")
+    
     parser_theme.add_argument("--no-activate", action="store_true", help="Generate artifacts without changing the live desktop")
+    parser_theme.add_argument(
+        "--accent-hex", action="store_true",
+        help="Print the accent hex the current wallpaper would produce, then exit",
+    )
+    parser_theme.add_argument(
+        "--moon", type=float, nargs="?", const=0.65, metavar="STRENGTH",
+        help="Apply a nightlight wallpaper (0..1, default 0.65) and resync the palette from it",
+    )
+    parser_theme.add_argument(
+        "--day", action="store_true",
+        help="Undo --moon by restoring the original wallpaper and resyncing",
+    )
+    parser_theme.add_argument(
+        "--watch", action="store_true",
+        help="Poll the current wallpaper and resync the palette whenever it changes",
+    )
 
     args = parser.parse_args()
 
@@ -370,28 +576,59 @@ def main():
     elif args.command == "config":
         handle_config(args)
     elif args.command == "theme":
-        from core.palette import ThemePalette
+        from core.palette import ChromaticExtractor, ThemePalette
         from theming.orchestrator import DesktopThemeOrchestrator
 
-        if args.init:
-            report = DesktopThemeOrchestrator.initialize_system(activate=not args.no_activate)
-        elif args.sync:
-            image_path = os.path.abspath(os.path.expanduser(args.sync))
+        activate = not args.no_activate
+        sync_target = args.sync or args.sync_image
+
+        if args.accent_hex:
+            # Read-only probe: report what the accent *would* be, and touch
+            # nothing. Handy for scripting and for sanity-checking a wallpaper.
+            image = _current_wallpaper_path()
+            if not image:
+                print(json.dumps({"error": "no current wallpaper found"}, indent=2))
+                raise SystemExit(1)
+            hue = ChromaticExtractor.extract_hue(image)
+            print(ThemePalette(hue).accent.to_hex())
+
+        elif args.watch:
+            _watch_wallpaper_theme(activate=activate)
+
+        elif args.moon is not None:
+            report = _apply_nightlight(args.moon, activate=activate)
+            print(json.dumps(report, indent=2, default=str))
+
+        elif args.day:
+            report = _restore_daylight(activate=activate)
+            print(json.dumps(report, indent=2, default=str))
+
+        elif sync_target:
+            image_path = os.path.abspath(os.path.expanduser(sync_target))
             if not os.path.isfile(image_path):
                 parser.error(f"local wallpaper does not exist: {image_path}")
             report = DesktopThemeOrchestrator.sync_from_image(
-                image_path, activate_kde=not args.no_activate
+                image_path, activate_kde=activate
             )
+            print(json.dumps(report, indent=2, default=str))
+
         elif args.hue is not None:
             if not 0 <= args.hue <= 360:
                 parser.error("--hue must be between 0 and 360")
             palette = ThemePalette(args.hue)
             report = DesktopThemeOrchestrator.sync_from_palette(
-                palette, activate_kde=not args.no_activate
+                palette, activate_kde=activate
             )
+            print(json.dumps(report, indent=2, default=str))
+
         else:
-            parser.error("theme requires --init, --sync IMAGE or --hue DEGREES")
-        print(json.dumps(report, indent=2, default=str))
+            parser.error(
+                "theme requires one of --sync IMAGE, --hue DEGREES, "
+                "--accent-hex, --moon, --day or --watch"
+            )
+    elif args.command == "shortcuts":
+        install_shortcuts()
+
     elif args.command == "start":
         print("Starting daemon...")
         subprocess.run(["systemctl", "--user", "start", "muzwall.service"])

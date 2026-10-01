@@ -114,7 +114,6 @@ def main():
 
     current_plugin_name = None
     current_plugin_settings = None
-    current_accent_sync = None
     source = None
 
     try:
@@ -128,16 +127,7 @@ def main():
             interval = settings.get("interval_seconds", 60)
             scale_mode = settings.get("scale_mode", "fit")
             border_color = settings.get("border_color", "#000000")
-            accent_sync = settings.get("accent_sync", False)
             theme_sync = settings.get("theme_sync", False)
-
-            # Apply KDE Accent sync if it changed
-            # The generated Muzwall palette owns the accent while theme_sync
-            # is enabled; native wallpaper extraction would overwrite it.
-            effective_accent_sync = accent_sync and not theme_sync
-            if current_accent_sync != effective_accent_sync:
-                KDEWallpaperSetter.set_accent_color_from_wallpaper(effective_accent_sync)
-                current_accent_sync = effective_accent_sync
 
             # Re-initialize plugin ONLY if plugin settings changed
             plugin_name = config.get("active_plugin", "local_folder")
@@ -250,7 +240,7 @@ def main():
                             except Exception as e:
                                 print(f"⚠️ Notification execution error: {e}")
                     else:
-                        KDEWallpaperSetter.write_status("Failed to apply KDE wallpaper.", "error", next_images[0] if next_images else "")
+                        KDEWallpaperSetter.write_status("Failed to apply wallpaper.", "error", next_images[0] if next_images else "")
             else:
                 print(f"No valid plugin configured for: {plugin_name}")
                 if current_action:

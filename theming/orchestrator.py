@@ -2,43 +2,50 @@
 
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from core.palette import ChromaticExtractor, ThemePalette
+from .adapters.btop import BtopAdapter
+from .adapters.fastfetch import FastfetchAdapter
 from .adapters.gtk import GTKAdapter
-from .adapters.kde import KDEColorAdapter
 from .adapters.kitty import KittyAdapter
-from .adapters.klassy import KlassyAdapter
-from .adapters.kwin import KWinPhysicsAdapter
-from .adapters.fonts import FontAdapter
+from .adapters.niri import NiriAdapter
 
 
 class DesktopThemeOrchestrator:
     """The conductor; every adapter is independently replaceable."""
 
-    ADAPTERS = (KDEColorAdapter, KlassyAdapter, GTKAdapter, KittyAdapter)
+    # Every adapter here writes a file that survives independently of any other
+    # adapter, and every one of them targets the live niri/Noctalia session, so
+    # they all run unconditionally. The Plasma-only adapters (KDE colour scheme,
+    # KWin physics, Klassy decorations, kdeglobals fonts) were removed when
+    # Plasma was dropped; there is no longer a session that could need them.
+    ADAPTERS = (
+        ("gtk", GTKAdapter),
+        ("kitty", KittyAdapter),
+        ("niri", NiriAdapter),
+        ("fastfetch", FastfetchAdapter),
+        ("btop", BtopAdapter),
+    )
 
     @classmethod
     def _apply_adapters(cls, palette: ThemePalette, activate: bool) -> dict[str, object]:
         """Apply every consumer concurrently.
 
-        The adapters own disjoint artifacts (color schemes, decoration rc,
-        gtk css, kitty conf) and make independent activation calls, so there
-        is no shared state to serialize. Running them in parallel hides the
-        write + subprocess-spawn latency; the two visual reloads Plasma
-        demands (scheme apply and KWin reconfigure) overlap into one beat
-        instead of stacking sequentially.
+        The adapters own disjoint artifacts (niri theme kdl, fastfetch config and
+        art, gtk css, kitty conf, btop theme) and make independent activation
+        calls, so there is no shared state to serialize. Running them in parallel
+        hides the write + subprocess-spawn latency; the two visual reloads niri
+        needs (config reload and kitty remap) overlap into one beat instead of
+        stacking sequentially.
         """
-        with ThreadPoolExecutor(max_workers=len(cls.ADAPTERS)) as pool:
+        selected = cls.ADAPTERS
+        with ThreadPoolExecutor(max_workers=len(selected)) as pool:
             futures = {
                 name: pool.submit(adapter.apply, palette, activate=activate)
-                for name, adapter in (
-                    ("kde", KDEColorAdapter),
-                    ("klassy", KlassyAdapter),
-                    ("gtk", GTKAdapter),
-                    ("kitty", KittyAdapter),
-                )
+                for name, adapter in selected
             }
             return {name: future.result() for name, future in futures.items()}
 
@@ -82,10 +89,6 @@ class DesktopThemeOrchestrator:
         report["took_ms"] = int((time.monotonic() - started) * 1000)
         return report
 
-    @classmethod
-    def initialize_system(cls, *, activate: bool = True) -> dict[str, object]:
-        """One-shot foundation: 60 Hz physics, typography, window decorator."""
-        return {
-            "kwin": KWinPhysicsAdapter.apply(activate=activate),
-            "fonts": FontAdapter.apply(),
-        }
+    # initialize_system() (KWin 60Hz physics + kdeglobals fonts) was removed with
+    # the Plasma adapters. Niri has no equivalent knob: its animation timing
+    # lives in config.kdl, which the NiriAdapter already rewrites.

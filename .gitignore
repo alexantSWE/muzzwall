@@ -3,5 +3,11 @@ __pycache__/
 .vscode/
 .idea/
 test_net.py
+
+# Local runtime config. Contains the Wallhaven API key and personal paths, so
+# it is intentionally untracked (it was tracked by accident before this entry
+# existed; the key is in old history and should be rotated if this repo is
+# ever pushed anywhere public).
 config.json
-config.json
+config.txt
+*.bak
