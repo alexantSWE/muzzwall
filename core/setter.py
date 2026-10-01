@@ -4,6 +4,7 @@ import os
 import argparse
 import json
 import shutil
+import time
 
 # Try importing OpenCV for GPU/OpenCL acceleration; fallback to Pillow if absent
 try:
@@ -303,6 +304,74 @@ class KDEWallpaperSetter:
 
         cv2.imwrite(output_path, bg, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
+    # Scratch directory for generated blur frames. /dev/shm is RAM, and blur
+    # frames survive daemon restarts, so they have to be reclaimed explicitly.
+    BLUR_PREFIX = "blur_"
+    BLUR_GRACE_SECONDS = 3600    # rotation is every ~30 min, so this holds 2 rotations
+    BLUR_MAX_RETAINED = 4        # hard ceiling, so hammering `next` cannot still climb
+
+    @staticmethod
+    def get_ram_dir() -> str:
+        path = "/dev/shm/muzwall" if os.path.exists("/dev/shm") else os.path.expanduser("~/.cache/muzwall")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    @staticmethod
+    def _prune_blur_cache(keep_paths, grace_seconds: int = None,
+                          max_retained: int = None) -> int:
+        """Deletes generated blur frames that are neither in use nor recent.
+
+        Called after a rotation has been handed to the compositor. Two
+        independent rules, because either alone leaks:
+
+        * The grace window. The path we just passed out is still RAM-resident
+          and may be read asynchronously by the shell that drew it, so the
+          newest frames are spared regardless of whether they are still in use.
+        * A hard count cap. The grace window bounds growth only by rotation
+          *rate*; spamming `muzwall next` inside one window would otherwise
+          accumulate a frame per call, which is the original bug.
+
+        Frames that predate a crash are reclaimed by the same pass, so an
+        unclean exit costs at most one window's worth of RAM.
+        """
+        ram_dir = KDEWallpaperSetter.get_ram_dir()
+        grace = KDEWallpaperSetter.BLUR_GRACE_SECONDS if grace_seconds is None else grace_seconds
+        cap = KDEWallpaperSetter.BLUR_MAX_RETAINED if max_retained is None else max_retained
+        keep = {os.path.abspath(p) for p in keep_paths}
+        cutoff = time.time() - grace
+
+        try:
+            frames = []
+            for name in os.listdir(ram_dir):
+                if not name.startswith(KDEWallpaperSetter.BLUR_PREFIX):
+                    continue
+                full = os.path.join(ram_dir, name)
+                if os.path.isfile(full):
+                    frames.append(full)
+            frames.sort(key=os.path.getmtime)  # oldest first
+
+            # Over the cap, the oldest surplus is dropped regardless of age.
+            surplus = set(frames[:max(0, len(frames) - cap)])
+
+            removed = 0
+            for full in frames:
+                if os.path.abspath(full) in keep:
+                    continue
+                try:
+                    if full not in surplus and os.path.getmtime(full) > cutoff:
+                        continue
+                    os.remove(full)
+                    removed += 1
+                except OSError as e:
+                    print(f"Failed to remove stale blur frame {os.path.basename(full)}: {e}")
+
+            if removed:
+                print(f"🧹 Reclaimed {removed} stale blur frame(s) from {ram_dir}")
+            return removed
+        except Exception as e:
+            print(f"Failed to prune blur cache: {e}")
+            return 0
+
     @staticmethod
     def set_wallpaper(image_paths, mode: str = "fill", border_color: str = "#000000"):
         if isinstance(image_paths, str):
@@ -316,8 +385,7 @@ class KDEWallpaperSetter:
         disp_w = disp_h = None
 
         # Shared Memory (RAM Disk) directory
-        ram_dir = "/dev/shm/muzwall" if os.path.exists("/dev/shm") else os.path.expanduser("~/.cache/muzwall")
-        os.makedirs(ram_dir, exist_ok=True)
+        ram_dir = KDEWallpaperSetter.get_ram_dir()
 
         for idx, path in enumerate(valid_paths):
             current_mode = mode.lower()
@@ -445,6 +513,10 @@ class KDEWallpaperSetter:
         except Exception as e:
             print(f"Failed to set wallpaper: {e}")
             return False
+        finally:
+            # Runs on every path, including the failure ones: a rotation that
+            # errors out is precisely when stale frames go un-reclaimed.
+            KDEWallpaperSetter._prune_blur_cache(final_paths)
 
 
 def _running_under_kde() -> bool:

@@ -19,7 +19,11 @@ class WallhavenSource(WallpaperSource):
         # Convert MB to Bytes for easy comparison with the API response
         self.max_size_bytes = max_size_mb * 1024 * 1024 
         
-        self.cache = CacheManager()
+        # The API's `file_size` is only a hint and the CDN's Content-Length can
+        # disagree with it, so the cache enforces the same ceiling against bytes
+        # actually written. A 100-file cache of unknown-size files is a disk
+        # incident waiting to happen.
+        self.cache = CacheManager(max_file_bytes=self.max_size_bytes)
         self.history = []
         self.history_index = -1
         

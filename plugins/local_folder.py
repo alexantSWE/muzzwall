@@ -5,11 +5,7 @@ import json
 import time
 from typing import Optional
 from core.wallpaper import WallpaperSource
-
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
+from core.imageutil import is_valid_image
 
 class LocalFolderSource(WallpaperSource):
     def __init__(self, folder_path: str, order: str = "random", recursive: bool = False, persist_history: bool = True):
@@ -95,17 +91,7 @@ class LocalFolderSource(WallpaperSource):
 
     def _is_image_valid(self, path: str) -> bool:
         """Verifies file headers to prevent crashes on broken downloads."""
-        if not os.path.exists(path) or os.path.getsize(path) == 0:
-            return False
-        if not Image:
-            return True
-        try:
-            with Image.open(path) as img:
-                img.verify()
-            return True
-        except Exception as e:
-            print(f"⚠️ Corrupted image skipped: {os.path.basename(path)} ({e})")
-            return False
+        return is_valid_image(path)
 
     def fetch_next(self, abort_check=None) -> Optional[str]:
         images = self._get_valid_images()
