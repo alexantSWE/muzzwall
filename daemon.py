@@ -26,7 +26,7 @@ class LoggerWriter:
 sys.stdout = LoggerWriter("INFO")
 sys.stderr = LoggerWriter("ERROR")
 
-from core.setter import KDEWallpaperSetter
+from core.setter import WallpaperSetter
 from core.config import ConfigManager, CONFIG_PATH
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
@@ -46,12 +46,12 @@ def restore_wallpaper_and_exit(signum=None, frame=None):
     print("\nDaemon shutting down cleanly.")
     if original_wallpaper_state and original_wallpaper_state.get("image"):
         print("Restoring original wallpaper...")
-        KDEWallpaperSetter.set_wallpaper(
+        WallpaperSetter.set_wallpaper(
             image_paths=original_wallpaper_state["image"],
             mode=original_wallpaper_state.get("mode", "fill"),
             border_color=original_wallpaper_state.get("color", "#000000")
         )
-        KDEWallpaperSetter.clear_wallpaper_backup()
+        WallpaperSetter.clear_wallpaper_backup()
     sys.exit(0)
 
 def handle_next_signal(signum, frame):
@@ -95,14 +95,14 @@ def main():
     print("Muzwall Daemon started. Press Ctrl+C to exit.")
 
     # 1. Recover or backup the original wallpaper
-    original_wallpaper_state = KDEWallpaperSetter.load_wallpaper_backup()
+    original_wallpaper_state = WallpaperSetter.load_wallpaper_backup()
     if original_wallpaper_state:
         print(f"Recovered previous wallpaper backup: {original_wallpaper_state.get('image')}")
     else:
-        original_wallpaper_state = KDEWallpaperSetter.get_current_wallpaper()
+        original_wallpaper_state = WallpaperSetter.get_current_wallpaper()
         if original_wallpaper_state:
             print(f"Backed up original wallpaper: {original_wallpaper_state.get('image')}")
-            KDEWallpaperSetter.save_wallpaper_backup(original_wallpaper_state)
+            WallpaperSetter.save_wallpaper_backup(original_wallpaper_state)
         else:
             print("Warning: Could not detect original wallpaper.")
 
@@ -156,28 +156,28 @@ def main():
 
             if source:
                 if current_action == "prev":
-                    KDEWallpaperSetter.write_status("Fetching previous wallpaper...", "info")
+                    WallpaperSetter.write_status("Fetching previous wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_prev(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
-                        KDEWallpaperSetter.write_status("At beginning of history.", "warning")
+                        WallpaperSetter.write_status("At beginning of history.", "warning")
                 elif current_action == "next":
-                    KDEWallpaperSetter.write_status("Fetching next wallpaper...", "info")
+                    WallpaperSetter.write_status("Fetching next wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
-                        KDEWallpaperSetter.write_status("No valid images found.", "error")
+                        WallpaperSetter.write_status("No valid images found.", "error")
                 elif current_action is None and not is_paused:
-                    KDEWallpaperSetter.write_status("Auto-rotating wallpaper...", "info")
+                    WallpaperSetter.write_status("Auto-rotating wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
                         if img: next_images.append(img)
                     if not next_images:
-                        KDEWallpaperSetter.write_status("No valid images found.", "error")
+                        WallpaperSetter.write_status("No valid images found.", "error")
 
-                # Apply wallpaper via KDE Setter
+                # Apply wallpaper via the compositor bridge
                 if next_images:
                     primary_image = next_images[0]
                     filename = os.path.basename(primary_image)
@@ -198,7 +198,7 @@ def main():
                         )
                         palette_thread.start()
 
-                    success = KDEWallpaperSetter.set_wallpaper(
+                    success = WallpaperSetter.set_wallpaper(
                         image_paths=next_images,
                         mode=scale_mode,
                         border_color=border_color,
@@ -228,7 +228,7 @@ def main():
                         if len(next_images) > 1:
                             msg += f" (+ {len(next_images)-1} others)"
 
-                        KDEWallpaperSetter.write_status(msg, "success", primary_image)
+                        WallpaperSetter.write_status(msg, "success", primary_image)
 
                         # Desktop Notifications
                         if settings.get("show_notifications", False):
@@ -240,14 +240,34 @@ def main():
                             except Exception as e:
                                 print(f"⚠️ Notification execution error: {e}")
                     else:
-                        KDEWallpaperSetter.write_status("Failed to apply wallpaper.", "error", next_images[0] if next_images else "")
+                        WallpaperSetter.write_status("Failed to apply wallpaper.", "error", next_images[0] if next_images else "")
+                    if success:
+                        # Purity-weighted display time: sketchy/nsfw stay longer.
+                        try:
+                            import json as _json
+                            _mults = settings.get("purity_multipliers", {"sfw": 1.0, "sketchy": 2.0, "nsfw": 3.0})
+                            _by_name = {}
+                            _cache_path = os.path.expanduser("~/.cache/wallhaven-purity.json")
+                            if os.path.exists(_cache_path):
+                                _by_name = _json.load(open(_cache_path, encoding="utf-8")).get("by_name", {})
+                            _purity = _by_name.get(filename, "sfw")
+                            _mult = float(_mults.get(_purity, 1.0))
+                            wait_timeout = max(interval, int(interval * _mult))
+                            if _purity != "sfw":
+                                print(f"Purity={_purity}: showing for {wait_timeout}s (base {interval}s)")
+                        except Exception as _e:
+                            wait_timeout = interval
+                            print(f"purity timing lookup failed: {_e}")
+                else:
+                    wait_timeout = interval
             else:
                 print(f"No valid plugin configured for: {plugin_name}")
                 if current_action:
-                    KDEWallpaperSetter.write_status(f"Invalid plugin: {plugin_name}", "error")
+                    WallpaperSetter.write_status(f"Invalid plugin: {plugin_name}", "error")
+                wait_timeout = interval
 
             # Microsecond wake-up wait with timeout interval (Replaces time.sleep)
-            action_event.wait(timeout=interval)
+            action_event.wait(timeout=wait_timeout)
 
     except KeyboardInterrupt:
         restore_wallpaper_and_exit()

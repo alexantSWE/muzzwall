@@ -282,7 +282,7 @@ StartupNotify=false
             return
             
     # Refresh the launcher's desktop database so the new entries show up in
-    # Noctalia immediately. KBuildSysCoca is gone with Plasma.
+    # Noctalia immediately.
     subprocess.run(["update-desktop-database", apps_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("✅ Desktop entries generated successfully!")
@@ -303,9 +303,9 @@ StartupNotify=false
 
 def _current_wallpaper_path() -> str | None:
     """Resolve the wallpaper currently on screen, or None."""
-    from core.setter import KDEWallpaperSetter
+    from core.setter import WallpaperSetter
 
-    state = KDEWallpaperSetter.get_current_wallpaper() or {}
+    state = WallpaperSetter.get_current_wallpaper() or {}
     image = state.get("image")
     if image and os.path.isfile(image):
         return image
@@ -358,7 +358,7 @@ def _apply_nightlight(strength: float, activate: bool = True) -> dict:
     """
     from core.nightlight import build_night_variant, night_hue
     from core.palette import ChromaticExtractor, ThemePalette
-    from core.setter import KDEWallpaperSetter
+    from core.setter import WallpaperSetter
     from theming.orchestrator import DesktopThemeOrchestrator
 
     source = _current_wallpaper_path()
@@ -369,7 +369,7 @@ def _apply_nightlight(strength: float, activate: bool = True) -> dict:
     if night is None:
         return {"error": "nightlight render failed", "source": source}
 
-    applied = KDEWallpaperSetter.set_wallpaper([night])
+    applied = WallpaperSetter.set_wallpaper([night])
     if not applied:
         return {"error": "could not apply the night wallpaper", "source": night}
 
@@ -379,7 +379,7 @@ def _apply_nightlight(strength: float, activate: bool = True) -> dict:
     day_hue = ChromaticExtractor.extract_hue(source)
     cooled = night_hue(day_hue, strength)
     report = DesktopThemeOrchestrator.sync_from_palette(
-        ThemePalette(cooled), activate_kde=activate
+        ThemePalette(cooled), activate=activate
     )
     _remember_daytime_wallpaper(source, strength)
     report["nightlight"] = {
@@ -399,12 +399,12 @@ def _restore_daylight(activate: bool = True) -> dict:
     own backup and then to the newest non-night file, so this still does
     something sensible if the state file was lost.
     """
-    from core.setter import KDEWallpaperSetter
+    from core.setter import WallpaperSetter
     from theming.orchestrator import DesktopThemeOrchestrator
 
     candidate = _recalled_daytime_wallpaper()
     if not candidate:
-        backup = KDEWallpaperSetter.load_wallpaper_backup() or {}
+        backup = WallpaperSetter.load_wallpaper_backup() or {}
         recorded = backup.get("image")
         if recorded and os.path.isfile(recorded):
             candidate = recorded
@@ -414,10 +414,10 @@ def _restore_daylight(activate: bool = True) -> dict:
     if not candidate:
         return {"error": "could not determine the original wallpaper"}
 
-    if not KDEWallpaperSetter.set_wallpaper([candidate]):
+    if not WallpaperSetter.set_wallpaper([candidate]):
         return {"error": "could not restore the original wallpaper", "image": candidate}
 
-    report = DesktopThemeOrchestrator.sync_from_image(candidate, activate_kde=activate)
+    report = DesktopThemeOrchestrator.sync_from_image(candidate, activate=activate)
     _forget_daytime_wallpaper()
     report["restored"] = candidate
     return report
@@ -483,7 +483,7 @@ def _watch_wallpaper_theme(activate: bool = True, interval: float = 5.0) -> None
                     if last is not None:
                         print(f"Wallpaper changed: {current}")
                         report = DesktopThemeOrchestrator.sync_from_image(
-                            current, activate_kde=activate
+                            current, activate=activate
                         )
                         print(f"  accent {report.get('accent')} (hue {report.get('hue')})")
                     last = marker
@@ -608,7 +608,7 @@ def main():
             if not os.path.isfile(image_path):
                 parser.error(f"local wallpaper does not exist: {image_path}")
             report = DesktopThemeOrchestrator.sync_from_image(
-                image_path, activate_kde=activate
+                image_path, activate=activate
             )
             print(json.dumps(report, indent=2, default=str))
 
@@ -617,7 +617,7 @@ def main():
                 parser.error("--hue must be between 0 and 360")
             palette = ThemePalette(args.hue)
             report = DesktopThemeOrchestrator.sync_from_palette(
-                palette, activate_kde=activate
+                palette, activate=activate
             )
             print(json.dumps(report, indent=2, default=str))
 

@@ -10,7 +10,7 @@ from unittest.mock import patch, mock_open, MagicMock
 # Import the modules we want to test
 from core.config import ConfigManager, CONFIG_PATH
 from core.cache import CacheManager
-from core.setter import KDEWallpaperSetter, _session_env, _set_wallpaper_noctalia
+from core.setter import WallpaperSetter, _session_env, _set_wallpaper_noctalia
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
 import cli
@@ -54,52 +54,48 @@ class TestWallpaperSetter(unittest.TestCase):
         # time this ran.
         self._ram = tempfile.TemporaryDirectory()
         self.addCleanup(self._ram.cleanup)
-        p = patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=self._ram.name)
+        p = patch.object(WallpaperSetter, "get_ram_dir", return_value=self._ram.name)
         p.start()
         self.addCleanup(p.stop)
 
     def test_hex_to_rgb(self):
-        self.assertEqual(KDEWallpaperSetter.hex_to_rgb("#000000"), "0,0,0")
-        self.assertEqual(KDEWallpaperSetter.hex_to_rgb("#FFFFFF"), "255,255,255")
+        self.assertEqual(WallpaperSetter.hex_to_rgb("#000000"), "0,0,0")
+        self.assertEqual(WallpaperSetter.hex_to_rgb("#FFFFFF"), "255,255,255")
 
-    @patch("core.setter._running_under_kde", return_value=False)
     @patch("core.setter._set_wallpaper_noctalia", return_value=True)
     @patch("os.path.exists", return_value=True)
-    def test_set_wallpaper_uses_noctalia_on_niri(self, _exists, _noctalia, _kde):
-        result = KDEWallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit")
+    def test_set_wallpaper_uses_noctalia_on_niri(self, _exists, _noctalia):
+        result = WallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit")
         self.assertTrue(result)
         _noctalia.assert_called_once()
 
     def test_set_wallpaper_rejects_missing_files(self):
-        self.assertFalse(KDEWallpaperSetter.set_wallpaper("/nope/missing.jpg"))
+        self.assertFalse(WallpaperSetter.set_wallpaper("/nope/missing.jpg"))
 
-    @patch("core.setter._running_under_kde", return_value=False)
     @patch("shutil.which", return_value=None)
-    def test_set_wallpaper_fails_without_a_compositor_bridge(self, _which, _kde):
+    def test_set_wallpaper_fails_without_a_compositor_bridge(self, _which):
         """Neither Plasma nor Noctalia available must fail loudly, not silently."""
-        self.assertFalse(KDEWallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit"))
+        self.assertFalse(WallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit"))
 
-    @patch("core.setter._running_under_kde", return_value=False)
     @patch("os.path.exists")
     @patch("subprocess.run")
-    def test_get_current_wallpaper_from_noctalia(self, mock_subprocess, mock_exists, _kde):
+    def test_get_current_wallpaper_from_noctalia(self, mock_subprocess, mock_exists):
         mock_exists.return_value = True
         mock_subprocess.return_value = MagicMock(
             returncode=0, stdout="/home/user/pic.png\n", stderr=""
         )
-        state = KDEWallpaperSetter.get_current_wallpaper()
+        state = WallpaperSetter.get_current_wallpaper()
         self.assertEqual(state.get("image"), "/home/user/pic.png")
 
-    @patch("core.setter._running_under_kde", return_value=False)
     @patch("os.path.exists")
     @patch("subprocess.run")
-    def test_get_current_wallpaper_empty_when_bridge_is_silent(self, mock_subprocess, mock_exists, _kde):
+    def test_get_current_wallpaper_empty_when_bridge_is_silent(self, mock_subprocess, mock_exists):
         """A bridge that answers with garbage must not be trusted as a path."""
         mock_exists.return_value = True
         mock_subprocess.return_value = MagicMock(
             returncode=0, stdout="error: not running\n", stderr=""
         )
-        self.assertEqual(KDEWallpaperSetter.get_current_wallpaper(), {})
+        self.assertEqual(WallpaperSetter.get_current_wallpaper(), {})
 
 
 class TestSessionEnv(unittest.TestCase):
@@ -220,8 +216,8 @@ class TestBlurCachePruning(unittest.TestCase):
             stale = self._frame(directory, "blur_0_stale.jpg", age_seconds=7200)
             fresh = self._frame(directory, "blur_1_fresh.jpg", age_seconds=5)
 
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                removed = KDEWallpaperSetter._prune_blur_cache([live])
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                removed = WallpaperSetter._prune_blur_cache([live])
 
             self.assertEqual(removed, 1, "only the frame past the grace window goes")
             self.assertTrue(os.path.exists(live), "the frame just handed to the compositor stays")
@@ -235,8 +231,8 @@ class TestBlurCachePruning(unittest.TestCase):
             for i in range(10):
                 self._frame(directory, f"blur_{i}_f{i}.jpg", age_seconds=1)
 
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                removed = KDEWallpaperSetter._prune_blur_cache([])
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                removed = WallpaperSetter._prune_blur_cache([])
 
             self.assertEqual(removed, 6)
             self.assertEqual(len(os.listdir(directory)), 4)
@@ -252,8 +248,8 @@ class TestBlurCachePruning(unittest.TestCase):
             frames = [self._frame(directory, f"blur_{i}_f{i}.jpg", age_seconds=1) for i in range(10)]
             live = frames[-3:]  # the three oldest of the set, deliberately
 
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                KDEWallpaperSetter._prune_blur_cache(live, max_retained=4)
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                WallpaperSetter._prune_blur_cache(live, max_retained=4)
 
             # 10 frames, cap 4 -> oldest 6 are surplus; the 3 "live" frames are
             # the oldest of the remaining four and must survive anyway.
@@ -265,8 +261,8 @@ class TestBlurCachePruning(unittest.TestCase):
         inside the grace window must survive even when it is not in `keep`."""
         with tempfile.TemporaryDirectory() as directory:
             recent = self._frame(directory, "blur_0_recent.jpg", age_seconds=60)
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                KDEWallpaperSetter._prune_blur_cache([])
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                WallpaperSetter._prune_blur_cache([])
             self.assertTrue(os.path.exists(recent))
 
     def test_only_touches_its_own_files(self):
@@ -278,8 +274,8 @@ class TestBlurCachePruning(unittest.TestCase):
                 f.write(b"not ours")
             os.utime(bystander, (time.time() - 99999, time.time() - 99999))
 
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                KDEWallpaperSetter._prune_blur_cache([])
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                WallpaperSetter._prune_blur_cache([])
 
             self.assertTrue(os.path.exists(bystander), "pruning must not eat the download cache")
 
@@ -289,8 +285,8 @@ class TestBlurCachePruning(unittest.TestCase):
             os.makedirs(trap)
             os.utime(trap, (time.time() - 99999, time.time() - 99999))
 
-            with patch.object(KDEWallpaperSetter, "get_ram_dir", return_value=directory):
-                KDEWallpaperSetter._prune_blur_cache([])
+            with patch.object(WallpaperSetter, "get_ram_dir", return_value=directory):
+                WallpaperSetter._prune_blur_cache([])
             self.assertTrue(os.path.isdir(trap))
 
 class TestCacheManager(unittest.TestCase):

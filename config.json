@@ -7,7 +7,7 @@
         },
         "wallhaven": {
             "max_size_mb": 2.0,
-            "api_key": "aav0uAb67hSeHmILd6HJDxSrKwwcpy4l",
+            "api_key": "dNqNITrPCy9y5hwQgfKgLoWfKnXiLzHO",
             "query": "takumi",
             "purity": "101"
         }
@@ -17,7 +17,11 @@
         "scale_mode": "smart",
         "border_color": "dynamic",
         "show_notifications": false,
-        "proxy": "http://127.0.0.1:12334",
-        "theme_sync": true
+        "theme_sync": true,
+        "purity_multipliers": {
+            "sfw": 1.0,
+            "sketchy": 2.0,
+            "nsfw": 3.0
+        }
     }
 }

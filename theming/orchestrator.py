@@ -19,9 +19,7 @@ class DesktopThemeOrchestrator:
 
     # Every adapter here writes a file that survives independently of any other
     # adapter, and every one of them targets the live niri/Noctalia session, so
-    # they all run unconditionally. The Plasma-only adapters (KDE colour scheme,
-    # KWin physics, Klassy decorations, kdeglobals fonts) were removed when
-    # Plasma was dropped; there is no longer a session that could need them.
+    # they all run unconditionally. (Legacy adapter set was removed.)
     ADAPTERS = (
         ("gtk", GTKAdapter),
         ("kitty", KittyAdapter),
@@ -59,7 +57,7 @@ class DesktopThemeOrchestrator:
         cls,
         image_path: str,
         *,
-        activate_kde: bool = True,
+        activate: bool = True,
         fallback_hue: float = 285.0,
     ) -> dict[str, object]:
         started = time.monotonic()
@@ -69,7 +67,7 @@ class DesktopThemeOrchestrator:
             "hue": palette.hue,
             "accent": palette.accent.to_hex(),
         }
-        report.update(cls._apply_adapters(palette, activate=activate_kde))
+        report.update(cls._apply_adapters(palette, activate=activate))
         report["took_ms"] = int((time.monotonic() - started) * 1000)
         return report
 
@@ -78,17 +76,15 @@ class DesktopThemeOrchestrator:
         cls,
         palette: ThemePalette,
         *,
-        activate_kde: bool = True,
+        activate: bool = True,
     ) -> dict[str, object]:
         started = time.monotonic()
         report: dict[str, object] = {
             "hue": palette.hue,
             "accent": palette.accent.to_hex(),
         }
-        report.update(cls._apply_adapters(palette, activate=activate_kde))
+        report.update(cls._apply_adapters(palette, activate=activate))
         report["took_ms"] = int((time.monotonic() - started) * 1000)
         return report
 
-    # initialize_system() (KWin 60Hz physics + kdeglobals fonts) was removed with
-    # the Plasma adapters. Niri has no equivalent knob: its animation timing
     # lives in config.kdl, which the NiriAdapter already rewrites.

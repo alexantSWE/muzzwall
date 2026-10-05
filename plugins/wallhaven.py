@@ -54,9 +54,10 @@ class WallhavenSource(WallpaperSource):
             try:
                 from core.config import ConfigManager
                 config = ConfigManager.load()
-                proxy_url = config.get("settings", {}).get("proxy", "")
-                
-                if proxy_url and proxy_url.lower() != "none":
+                from core.proxy_resolver import resolve_proxy_url
+                proxy_url = resolve_proxy_url()
+
+                if proxy_url:
                     proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
                     opener = urllib.request.build_opener(proxy_handler)
                 else:

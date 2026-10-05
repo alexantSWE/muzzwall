@@ -22,7 +22,7 @@ except ImportError:
         ImageFilter = None
         np = None
 
-class KDEWallpaperSetter:
+class WallpaperSetter:
     MODE_MAP = {
         "fill": 0,
         "fit": 1,
@@ -44,8 +44,8 @@ class KDEWallpaperSetter:
     @staticmethod
     def get_display_bounds() -> tuple:
         """Dynamically detects and caches resolution to prevent spawning subprocesses on every switch."""
-        if KDEWallpaperSetter._cached_display_bounds:
-            return KDEWallpaperSetter._cached_display_bounds
+        if WallpaperSetter._cached_display_bounds:
+            return WallpaperSetter._cached_display_bounds
 
         env = os.environ.copy()
         try:
@@ -71,23 +71,7 @@ class KDEWallpaperSetter:
         if not display_ready:
             return (1920, 1080)
 
-        # 1. Try kscreen-doctor (Plasma Wayland & Modern X11)
-        try:
-            res = subprocess.run(["kscreen-doctor", "-j"], env=env, capture_output=True, text=True, timeout=1)
-            if res.returncode == 0:
-                data = json.loads(res.stdout)
-                for output in data.get("outputs", []):
-                    if output.get("connected") and output.get("enabled"):
-                        mode_id = output.get("currentModeId")
-                        for mode in output.get("modes", []):
-                            if mode.get("id") == mode_id:
-                                size = (mode["size"]["width"], mode["size"]["height"])
-                                KDEWallpaperSetter._cached_display_bounds = size
-                                return size
-        except Exception:
-            pass
-
-        # 2. Fallback to xrandr
+        # 1. Fallback to xrandr
         try:
             res = subprocess.run(["xrandr"], env=env, capture_output=True, text=True, timeout=1)
             for line in res.stdout.splitlines():
@@ -95,64 +79,33 @@ class KDEWallpaperSetter:
                     parts = line.split()[0].split('x')
                     if len(parts) == 2:
                         size = (int(parts[0]), int(parts[1]))
-                        KDEWallpaperSetter._cached_display_bounds = size
+                        WallpaperSetter._cached_display_bounds = size
                         return size
         except Exception:
             pass
 
-        KDEWallpaperSetter._cached_display_bounds = (1920, 1080)
+        WallpaperSetter._cached_display_bounds = (1920, 1080)
         return (1920, 1080)
 
     @staticmethod
     def get_current_wallpaper() -> dict:
         """Recover the active wallpaper settings for the current session."""
-        # Non-Plasma sessions must not read the stale KDE applet config, or a
-        # shutdown "restore" would hand us a wallpaper path from KDE days.
-        if not _running_under_kde():
-            exe = shutil.which("noctalia")
-            if not exe:
-                return {}
-            try:
-                res = subprocess.run([exe, "msg", "wallpaper-get"],
-                                     capture_output=True, text=True, timeout=5,
-                                     env=_session_env())
-                path = res.stdout.strip()
-                # noctalia prints diagnostics like "error: ..." on stdout while
-                # still exiting 0, so require an absolute path as well as an
-                # existing file before believing it.
-                if (res.returncode == 0 and os.path.isabs(path)
-                        and os.path.exists(path)):
-                    return {"image": path, "mode": "fill", "color": "#000000"}
-            except Exception:
-                pass
+        exe = shutil.which("noctalia")
+        if not exe:
             return {}
-
-        config_path = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
-        if not os.path.exists(config_path): return {}
-        state = {"image": "", "mode": "fill", "color": "#000000"}
-        in_wallpaper_section = False
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('[') and line.endswith(']'):
-                        in_wallpaper_section = ("Wallpaper][org.kde.image][General]" in line)
-                    elif in_wallpaper_section and '=' in line:
-                        key, val = line.split('=', 1)
-                        key, val = key.strip(), val.strip()
-                        if key == "Image":
-                            state["image"] = val.replace("file://", "")
-                        elif key == "FillMode":
-                            rev_map = {v: k for k, v in KDEWallpaperSetter.MODE_MAP.items()}
-                            state["mode"] = rev_map.get(int(val), "fill")
-                        elif key == "Color":
-                            try:
-                                r, g, b = map(int, val.split(','))
-                                state["color"] = f"#{r:02x}{g:02x}{b:02x}"
-                            except ValueError:
-                                state["color"] = "#000000"
-            if state["image"]: return state
-        except Exception: pass
+            res = subprocess.run([exe, "msg", "wallpaper-get"],
+                                 capture_output=True, text=True, timeout=5,
+                                 env=_session_env())
+            path = res.stdout.strip()
+            # noctalia prints diagnostics like "error: ..." on stdout while
+            # still exiting 0, so require an absolute path as well as an
+            # existing file before believing it.
+            if (res.returncode == 0 and os.path.isabs(path)
+                    and os.path.exists(path)):
+                return {"image": path, "mode": "fill", "color": "#000000"}
+        except Exception:
+            pass
         return {}
 
     @staticmethod
@@ -162,7 +115,7 @@ class KDEWallpaperSetter:
 
     @staticmethod
     def save_wallpaper_backup(state: dict) -> bool:
-        path = KDEWallpaperSetter.get_backup_path()
+        path = WallpaperSetter.get_backup_path()
         try:
             with open(path + ".tmp", "w") as f: json.dump(state, f, indent=4)
             os.replace(path + ".tmp", path)
@@ -171,20 +124,20 @@ class KDEWallpaperSetter:
 
     @staticmethod
     def load_wallpaper_backup() -> dict:
-        path = KDEWallpaperSetter.get_backup_path()
+        path = WallpaperSetter.get_backup_path()
         try:
             with open(path, "r") as f: return json.load(f)
         except Exception: return {}
 
     @staticmethod
     def clear_wallpaper_backup():
-        path = KDEWallpaperSetter.get_backup_path()
+        path = WallpaperSetter.get_backup_path()
         if os.path.exists(path): os.remove(path)
 
     @staticmethod
     def write_status(msg: str, status_type: str = "info", image: str = ""):
         import time
-        path = KDEWallpaperSetter.get_status_path()
+        path = WallpaperSetter.get_status_path()
         try:
             with open(path + ".tmp", "w") as f:
                 json.dump({"message": msg, "type": status_type, "image": image, "timestamp": time.time()}, f)
@@ -334,16 +287,16 @@ class KDEWallpaperSetter:
         Frames that predate a crash are reclaimed by the same pass, so an
         unclean exit costs at most one window's worth of RAM.
         """
-        ram_dir = KDEWallpaperSetter.get_ram_dir()
-        grace = KDEWallpaperSetter.BLUR_GRACE_SECONDS if grace_seconds is None else grace_seconds
-        cap = KDEWallpaperSetter.BLUR_MAX_RETAINED if max_retained is None else max_retained
+        ram_dir = WallpaperSetter.get_ram_dir()
+        grace = WallpaperSetter.BLUR_GRACE_SECONDS if grace_seconds is None else grace_seconds
+        cap = WallpaperSetter.BLUR_MAX_RETAINED if max_retained is None else max_retained
         keep = {os.path.abspath(p) for p in keep_paths}
         cutoff = time.time() - grace
 
         try:
             frames = []
             for name in os.listdir(ram_dir):
-                if not name.startswith(KDEWallpaperSetter.BLUR_PREFIX):
+                if not name.startswith(WallpaperSetter.BLUR_PREFIX):
                     continue
                 full = os.path.join(ram_dir, name)
                 if os.path.isfile(full):
@@ -385,7 +338,7 @@ class KDEWallpaperSetter:
         disp_w = disp_h = None
 
         # Shared Memory (RAM Disk) directory
-        ram_dir = KDEWallpaperSetter.get_ram_dir()
+        ram_dir = WallpaperSetter.get_ram_dir()
 
         for idx, path in enumerate(valid_paths):
             current_mode = mode.lower()
@@ -412,16 +365,16 @@ class KDEWallpaperSetter:
                     img = cv2.imread(path) if needs_pixels else None
                     if img is not None:
                         if needs_bounds and disp_w is None:
-                            disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
+                            disp_w, disp_h = WallpaperSetter.get_display_bounds()
                         needs_padding = False
                         if current_mode == "smart":
-                            current_mode, needs_padding = KDEWallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
+                            current_mode, needs_padding = WallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
                             if needs_padding and border_color.lower() not in ["blur", "dynamic"]:
                                 needs_padding = False
 
                         if needs_padding or (border_color.lower() == "blur" and current_mode in ["fit", "center"]):
                             blurred_path = os.path.join(ram_dir, f"blur_{idx}_{os.path.basename(path).split('.')[0]}.jpg")
-                            KDEWallpaperSetter.render_fast_blur(img, disp_w, disp_h, blurred_path)
+                            WallpaperSetter.render_fast_blur(img, disp_w, disp_h, blurred_path)
                             final_path = blurred_path
                             current_mode = "fill"
                         elif border_color.lower() == "dynamic" and current_mode not in ["fill", "stretch"]:
@@ -434,12 +387,12 @@ class KDEWallpaperSetter:
             elif Image and ImageFilter and needs_pixels:
                 try:
                     if needs_bounds and disp_w is None:
-                        disp_w, disp_h = KDEWallpaperSetter.get_display_bounds()
+                        disp_w, disp_h = WallpaperSetter.get_display_bounds()
                     with Image.open(path) as img:
                         w, h = img.size
                         needs_padding = False
                         if current_mode == "smart":
-                            current_mode, needs_padding = KDEWallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
+                            current_mode, needs_padding = WallpaperSetter.evaluate_smart_mode(img, disp_w, disp_h)
                             if needs_padding and border_color.lower() not in ["blur", "dynamic"]:
                                 needs_padding = False
 
@@ -473,42 +426,12 @@ class KDEWallpaperSetter:
                     print(f"Smart processing error (Pillow): {e}")
 
             final_paths.append(final_path)
-            fill_modes.append(KDEWallpaperSetter.MODE_MAP.get(current_mode, 0))
+            fill_modes.append(WallpaperSetter.MODE_MAP.get(current_mode, 0))
             hex_colors.append(current_color)
 
-        js_images = "[" + ", ".join([f'"{p}"' for p in final_paths]) + "]"
-        js_modes = "[" + ", ".join(map(str, fill_modes)) + "]"
-        js_colors = "[" + ", ".join([f'"{c}"' for c in hex_colors]) + "]"
-
-        js_script = f"""
-        var images = {js_images}; var modes = {js_modes}; var colors = {js_colors};
-        var allDesktops = desktops();
-        for (i=0; i<allDesktops.length; i++) {{
-            var d = allDesktops[i];
-            d.wallpaperPlugin = "org.kde.image";
-            d.currentConfigGroup = Array("Wallpaper", "org.kde.image", "General");
-            d.writeConfig("FillMode", modes[i % modes.length]);
-            d.writeConfig("Color", colors[i % colors.length]);
-            d.writeConfig("Image", "file://" + images[i % images.length]);
-        }}
-        """
+        # Apply wallpaper via the compositor that actually draws it (Noctalia
+        # under Niri/Sway/Hyprland); no plasmashell/dbus wallpaper paths exist.
         try:
-            if _running_under_kde():
-                # NOTE: dbus-send only surfaces a "ServiceUnknown" error when it
-                # actually waits for the reply. Without --print-reply it exits 0
-                # immediately, so check=True never fired and set_wallpaper()
-                # falsely reported success even with no plasmashell running.
-                subprocess.run(
-                    ["dbus-send", "--session", "--print-reply", "--reply-timeout=5000",
-                     "--dest=org.kde.plasmashell",
-                     "--type=method_call", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript",
-                     f"string:{js_script}"],
-                    check=True, capture_output=True, timeout=10,
-                )
-                return True
-
-            # Non-Plasma session (e.g. Niri + Noctalia): no plasmashell exists,
-            # so talk to the shell that actually draws our wallpaper.
             return _set_wallpaper_noctalia(final_paths)
         except Exception as e:
             print(f"Failed to set wallpaper: {e}")
@@ -516,19 +439,7 @@ class KDEWallpaperSetter:
         finally:
             # Runs on every path, including the failure ones: a rotation that
             # errors out is precisely when stale frames go un-reclaimed.
-            KDEWallpaperSetter._prune_blur_cache(final_paths)
-
-
-def _running_under_kde() -> bool:
-    """True when a real KDE Plasma session (plasmashell) is behind us."""
-    if os.environ.get("KDE_FULL_SESSION"):
-        return True
-    if os.environ.get("XDG_CURRENT_DESKTOP", "").lower() != "kde":
-        return False
-    return subprocess.run(
-        ["busctl", "--user", "status", "org.kde.plasmashell"],
-        capture_output=True,
-    ).returncode == 0
+            WallpaperSetter._prune_blur_cache(final_paths)
 
 
 def _session_env() -> dict:
@@ -593,4 +504,4 @@ if __name__ == "__main__":
     parser.add_argument("--mode", default="fit")
     parser.add_argument("--color", default="#000000")
     args = parser.parse_args()
-    KDEWallpaperSetter.set_wallpaper(args.image, args.mode, args.color)
+    WallpaperSetter.set_wallpaper(args.image, args.mode, args.color)

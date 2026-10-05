@@ -1,6 +1,6 @@
 """Perceptual palette generation for Muzwall.
 
-The module is intentionally independent from KDE and from image-toolkit imports.
+The module is intentionally free of desktop-env dependencies and image-toolkit imports.
 That makes the colour model easy to test and lets Muzwall keep working on a
 machine without OpenCV or Pillow installed.
 """
@@ -64,7 +64,7 @@ class OKLCH:
     def to_hex(self) -> str:
         return "#%02x%02x%02x" % self.to_rgb()
 
-    def to_kde_rgb(self) -> str:
+    def to_rgb_triplet(self) -> str:
         return ",".join(str(channel) for channel in self.to_rgb())
 
 
