@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Showcase reel: cycle wallpapers, let theme sync ripple, capture each beat."""
-import argparse, json, os, subprocess, sys, time, glob
+import argparse, json, os, subprocess, time
 
-STATUS = os.path.expanduser("~/.config/muzwall_status.json")
+from core import state
+
+STATUS = str(state.status_path())
 
 def status_ts():
     try:

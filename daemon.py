@@ -1,70 +1,110 @@
 #!/usr/bin/env python3
-import time
-import signal
-import sys
+"""Muzwall rotation daemon.
+
+Imports are side-effect free: logging redirection happens in ``main`` so tests
+and library users can import the module without losing stdout.
+"""
+
+from __future__ import annotations
+
+import json
 import os
+import signal
 import subprocess
+import sys
 import threading
+import time
+from typing import Optional
 
-LOG_FILE = os.path.expanduser("~/.cache/muzwall/muzwall.log")
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
-class LoggerWriter:
-    def __init__(self, level):
-        self.level = level
-        self.log_file = open(LOG_FILE, "a", buffering=1)
-
-    def write(self, message):
-        if message.strip():
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            for line in message.strip().split('\n'):
-                self.log_file.write(f"[{timestamp}] {line}\n")
-
-    def flush(self):
-        self.log_file.flush()
-
-sys.stdout = LoggerWriter("INFO")
-sys.stderr = LoggerWriter("ERROR")
-
-from core.setter import WallpaperSetter
-from core.config import ConfigManager, CONFIG_PATH
+from core import state
+from core.config import CONFIG_PATH, ConfigManager
+from core.setter import WallpaperSetter, _session_env
+from core.wallpaper import WallpaperSource
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
-from core.wallpaper import WallpaperSource
-from typing import Optional
 
 try:
     from theming.orchestrator import DesktopThemeOrchestrator
 except ImportError:
     DesktopThemeOrchestrator = None
 
-original_wallpaper_state = {}
+
+class LoggerWriter:
+    """Minimal stdout/stderr shim that writes timestamped lines to the log."""
+
+    def __init__(self, level: str, path: str):
+        self.level = level
+        self.log_file = open(path, "a", encoding="utf-8", buffering=1)
+
+    def write(self, message: str) -> int:
+        if message.strip():
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            for line in message.rstrip("\n").split("\n"):
+                if line.strip():
+                    self.log_file.write(f"[{timestamp}] {line}\n")
+        return len(message)
+
+    def flush(self) -> None:
+        try:
+            self.log_file.flush()
+        except OSError:
+            pass
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        return self.log_file.fileno()
+
+
+_logging_configured = False
+
+
+def configure_logging() -> None:
+    global _logging_configured
+    if _logging_configured:
+        return
+    path = state.log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sys.stdout = LoggerWriter("INFO", str(path))
+    sys.stderr = LoggerWriter("ERROR", str(path))
+    _logging_configured = True
+
+
+original_wallpaper_state: dict = {}
 action_event = threading.Event()
-action_requested = None
+action_requested: Optional[str] = None
+
 
 def restore_wallpaper_and_exit(signum=None, frame=None):
     print("\nDaemon shutting down cleanly.")
     if original_wallpaper_state and original_wallpaper_state.get("image"):
         print("Restoring original wallpaper...")
         WallpaperSetter.set_wallpaper(
-            image_paths=original_wallpaper_state["image"],
+            image_paths=original_wallpaper_state.get("images")
+            or original_wallpaper_state["image"],
             mode=original_wallpaper_state.get("mode", "fill"),
-            border_color=original_wallpaper_state.get("color", "#000000")
+            border_color=original_wallpaper_state.get("color", "#000000"),
+            modes=original_wallpaper_state.get("modes"),
+            colors=original_wallpaper_state.get("colors"),
         )
         WallpaperSetter.clear_wallpaper_backup()
-    sys.exit(0)
+    raise SystemExit(0)
+
 
 def handle_next_signal(signum, frame):
     global action_requested
     print("\n[Signal] Received next signal.")
     action_requested = "next"
-    action_event.set() # Instantly breaks out of sleep without 200ms tick delay
+    action_event.set()
+
 
 def handle_prev_signal(signum, frame):
     global action_requested
     print("\n[Signal] Received prev signal.")
     action_requested = "prev"
-    action_event.set() # Instantly breaks out of sleep
+    action_event.set()
+
 
 def get_plugin_instance(config) -> Optional[WallpaperSource]:
     plugin_name = config.get("active_plugin", "local_folder")
@@ -76,9 +116,9 @@ def get_plugin_instance(config) -> Optional[WallpaperSource]:
             folder_path=plugin_config.get("path", "~/Pictures"),
             order=plugin_config.get("order", "random"),
             recursive=plugin_config.get("recursive", False),
-            persist_history=plugin_config.get("persist_history", True)
+            persist_history=plugin_config.get("persist_history", True),
         )
-    elif normalized_name == "wallhaven":
+    if normalized_name == "wallhaven":
         plugin_config = config.get("plugins", {}).get("wallhaven", {})
         return WallhavenSource(
             query=plugin_config.get("query", ""),
@@ -86,15 +126,53 @@ def get_plugin_instance(config) -> Optional[WallpaperSource]:
             purity=plugin_config.get("purity", "100"),
             sorting=plugin_config.get("sorting", "random"),
             api_key=plugin_config.get("api_key", ""),
-            max_size_mb=plugin_config.get("max_size_mb", 20.0)
+            max_size_mb=plugin_config.get("max_size_mb", 20.0),
         )
     return None
 
+
+def _wait_seconds(settings: dict, filename: str, interval: int) -> int:
+    """Purity-weighted display time: sketchy/nsfw stay longer."""
+    multipliers = settings.get(
+        "purity_multipliers", {"sfw": 1.0, "sketchy": 2.0, "nsfw": 3.0}
+    )
+    cache_path = state.purity_path()
+    try:
+        with open(cache_path, encoding="utf-8") as stream:
+            by_name = json.load(stream).get("by_name", {})
+        purity = by_name.get(filename, "sfw")
+        multiplier = float(multipliers.get(purity, 1.0))
+        wait = max(interval, int(interval * multiplier))
+        if purity != "sfw":
+            print(f"Purity={purity}: showing for {wait}s (base {interval}s)")
+        return wait
+    except Exception as error:
+        print(f"purity timing lookup failed: {error}")
+        return interval
+
+
+def _notify(message: str, image: str) -> None:
+    if not image or not os.path.isfile(image):
+        return
+    try:
+        subprocess.run(
+            ["notify-send", "Muzwall", message, "-i", image, "-t", "3000"],
+            env=_session_env(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as error:
+        print(f"⚠️ Notification execution error: {error}")
+
+
 def main():
     global original_wallpaper_state, action_requested
+
+    configure_logging()
     print("Muzwall Daemon started. Press Ctrl+C to exit.")
 
-    # 1. Recover or backup the original wallpaper
+    # 1. Recover or back up the wallpaper Muzwall replaced.
     original_wallpaper_state = WallpaperSetter.load_wallpaper_backup()
     if original_wallpaper_state:
         print(f"Recovered previous wallpaper backup: {original_wallpaper_state.get('image')}")
@@ -104,9 +182,9 @@ def main():
             print(f"Backed up original wallpaper: {original_wallpaper_state.get('image')}")
             WallpaperSetter.save_wallpaper_backup(original_wallpaper_state)
         else:
-            print("Warning: Could not detect original wallpaper.")
+            print("Warning: could not detect the current wallpaper; nothing to restore on exit.")
 
-    # 2. Register signal handlers
+    # 2. Register signal handlers.
     signal.signal(signal.SIGINT, restore_wallpaper_and_exit)
     signal.signal(signal.SIGTERM, restore_wallpaper_and_exit)
     signal.signal(signal.SIGUSR1, handle_next_signal)
@@ -129,7 +207,11 @@ def main():
             border_color = settings.get("border_color", "#000000")
             theme_sync = settings.get("theme_sync", False)
 
-            # Re-initialize plugin ONLY if plugin settings changed
+            # Always initialised: the old code left this unbound when the first
+            # wallpaper apply failed, which raised UnboundLocalError and killed
+            # the daemon instead of retrying.
+            wait_timeout = interval
+
             plugin_name = config.get("active_plugin", "local_folder")
             plugin_settings = config.get("plugins", {}).get(plugin_name, {})
 
@@ -143,13 +225,16 @@ def main():
             action_event.clear()
 
             config_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
-            def should_abort():
-                if action_requested:
+
+            def should_abort(_config_mtime=config_mtime):
+                # B023: action_requested is intentionally resolved at call time,
+                # not captured, so a signal arriving mid-fetch is seen.
+                if action_requested:  # noqa: B023
                     return True
                 current_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0
-                return current_mtime > config_mtime
+                return current_mtime > _config_mtime
 
-            is_paused = os.path.exists(os.path.expanduser("~/.config/muzwall.pause"))
+            is_paused = state.is_paused()
             is_unique = settings.get("unique_wallpapers", False)
             fetch_count = 8 if is_unique else 1
             next_images = []
@@ -159,40 +244,39 @@ def main():
                     WallpaperSetter.write_status("Fetching previous wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_prev(abort_check=should_abort)
-                        if img: next_images.append(img)
+                        if img:
+                            next_images.append(img)
                     if not next_images:
                         WallpaperSetter.write_status("At beginning of history.", "warning")
                 elif current_action == "next":
                     WallpaperSetter.write_status("Fetching next wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
-                        if img: next_images.append(img)
+                        if img:
+                            next_images.append(img)
                     if not next_images:
                         WallpaperSetter.write_status("No valid images found.", "error")
                 elif current_action is None and not is_paused:
                     WallpaperSetter.write_status("Auto-rotating wallpaper...", "info")
                     for _ in range(fetch_count):
                         img = source.fetch_next(abort_check=should_abort)
-                        if img: next_images.append(img)
+                        if img:
+                            next_images.append(img)
                     if not next_images:
                         WallpaperSetter.write_status("No valid images found.", "error")
 
-                # Apply wallpaper via the compositor bridge
                 if next_images:
                     primary_image = next_images[0]
                     filename = os.path.basename(primary_image)
 
-                    # Kick off palette extraction in the background FIRST so it
-                    # overlaps set_wallpaper, which itself decodes the full-res
-                    # image for the smart/blur/dynamic border pipeline. On the
-                    # multi-megabyte PNGs that rotation regularly hits, this
-                    # hides ~260-400ms of decode behind the wallpaper change.
+                    # Start palette extraction before set_wallpaper so it
+                    # overlaps the image decode done by the smart/blur pipeline.
                     palette_payload: dict = {}
                     palette_thread = None
                     if theme_sync and DesktopThemeOrchestrator:
                         palette_thread = threading.Thread(
-                            target=lambda: palette_payload.update(
-                                palette=DesktopThemeOrchestrator.palette_for_image(primary_image)
+                            target=lambda payload=palette_payload, image=primary_image: payload.update(
+                                palette=DesktopThemeOrchestrator.palette_for_image(image)
                             ),
                             daemon=True,
                         )
@@ -212,7 +296,6 @@ def main():
                                 if palette is not None:
                                     theme_report = DesktopThemeOrchestrator.sync_from_palette(palette)
                                 else:
-                                    # Background extraction failed; retry in-line.
                                     theme_report = DesktopThemeOrchestrator.sync_from_image(primary_image)
                                 took = theme_report.get("took_ms")
                                 timing = f" in {took}ms" if took is not None else ""
@@ -220,57 +303,39 @@ def main():
                                     f"Theme synchronized from {filename} "
                                     f"(hue={theme_report['hue']}, accent={theme_report['accent']}){timing}."
                                 )
+                                skipped = theme_report.get("skipped")
+                                if skipped:
+                                    print(f"Theme adapters skipped (not installed): {', '.join(skipped)}")
                             except Exception as error:
-                                # A theme consumer must never make wallpaper rotation fail.
+                                # Decoration must never break rotation.
                                 print(f"⚠️ Theme synchronization error: {error}")
 
-                        msg = f"Wallpaper changed to {filename}"
+                        message = f"Wallpaper changed to {filename}"
                         if len(next_images) > 1:
-                            msg += f" (+ {len(next_images)-1} others)"
+                            message += f" (+ {len(next_images)-1} others)"
+                        WallpaperSetter.write_status(message, "success", primary_image)
 
-                        WallpaperSetter.write_status(msg, "success", primary_image)
-
-                        # Desktop Notifications
                         if settings.get("show_notifications", False):
-                            try:
-                                env = os.environ.copy()
-                                if "DISPLAY" not in env: env["DISPLAY"] = ":0"
-                                notif_cmd = ["notify-send", "Muzwall", msg, "-i", primary_image, "-t", "3000"]
-                                subprocess.run(notif_cmd, env=env, capture_output=True, text=True)
-                            except Exception as e:
-                                print(f"⚠️ Notification execution error: {e}")
+                            _notify(message, primary_image)
+
+                        wait_timeout = _wait_seconds(settings, filename, interval)
                     else:
-                        WallpaperSetter.write_status("Failed to apply wallpaper.", "error", next_images[0] if next_images else "")
-                    if success:
-                        # Purity-weighted display time: sketchy/nsfw stay longer.
-                        try:
-                            import json as _json
-                            _mults = settings.get("purity_multipliers", {"sfw": 1.0, "sketchy": 2.0, "nsfw": 3.0})
-                            _by_name = {}
-                            _cache_path = os.path.expanduser("~/.cache/wallhaven-purity.json")
-                            if os.path.exists(_cache_path):
-                                _by_name = _json.load(open(_cache_path, encoding="utf-8")).get("by_name", {})
-                            _purity = _by_name.get(filename, "sfw")
-                            _mult = float(_mults.get(_purity, 1.0))
-                            wait_timeout = max(interval, int(interval * _mult))
-                            if _purity != "sfw":
-                                print(f"Purity={_purity}: showing for {wait_timeout}s (base {interval}s)")
-                        except Exception as _e:
-                            wait_timeout = interval
-                            print(f"purity timing lookup failed: {_e}")
-                else:
-                    wait_timeout = interval
+                        WallpaperSetter.write_status(
+                            "Failed to apply wallpaper.",
+                            "error",
+                            next_images[0] if next_images else "",
+                        )
             else:
                 print(f"No valid plugin configured for: {plugin_name}")
                 if current_action:
                     WallpaperSetter.write_status(f"Invalid plugin: {plugin_name}", "error")
-                wait_timeout = interval
 
-            # Microsecond wake-up wait with timeout interval (Replaces time.sleep)
+            # Wake instantly on SIGUSR1/SIGUSR2 without a polling sleep.
             action_event.wait(timeout=wait_timeout)
 
     except KeyboardInterrupt:
         restore_wallpaper_and_exit()
+
 
 if __name__ == "__main__":
     main()

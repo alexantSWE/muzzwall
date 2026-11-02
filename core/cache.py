@@ -1,9 +1,12 @@
 # core/cache.py
+import hashlib
 import os
+import re
 import urllib.request
 import urllib.error
 import time
 from typing import Optional
+from urllib.parse import unquote, urlparse
 
 from core.imageutil import is_valid_image
 
@@ -31,8 +34,25 @@ class CacheManager:
         finally:
             self._clean_old_files()
 
+    @staticmethod
+    def _filename_for(url: str) -> str:
+        """Stable, collision-free cache name derived from the full URL.
+
+        The old code used the last path segment, so ``.../1.jpg?token=a`` and
+        ``.../1.jpg?token=b`` overwrote each other and query strings ended up in
+        filenames. Hashing the URL also makes resume work across runs, since the
+        name no longer depends on which CDN query parameters were present.
+        """
+        parsed = urlparse(url)
+        base = unquote(os.path.basename(parsed.path)) or "image"
+        stem, extension = os.path.splitext(base)
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")[:60] or "image"
+        safe_extension = extension.lower() if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", extension) else ""
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        return f"{safe_stem}-{digest}{safe_extension}"
+
     def _download(self, url: str, retries: int, timeout: int, abort_check) -> Optional[str]:
-        filename = url.split('/')[-1]
+        filename = self._filename_for(url)
         filepath = os.path.join(self.cache_dir, filename)
 
         for attempt in range(retries):
@@ -46,8 +66,6 @@ class CacheManager:
                     if existing_size > 0:
                         headers['Range'] = f'bytes={existing_size}-'
 
-                from core.config import ConfigManager
-                config = ConfigManager.load()
                 from core.proxy_resolver import resolve_proxy_url
                 proxy_url = resolve_proxy_url()
 

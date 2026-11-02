@@ -67,6 +67,10 @@ class OKLCH:
     def to_rgb_triplet(self) -> str:
         return ",".join(str(channel) for channel in self.to_rgb())
 
+    def to_kde_rgb(self) -> str:
+        """RGB triplet format used by KDE color scheme and kwriteconfig APIs."""
+        return self.to_rgb_triplet()
+
 
 def srgb_to_oklch(r: int, g: int, b: int) -> OKLCH:
     """Convert 8-bit sRGB to OKLCH without a third-party dependency."""

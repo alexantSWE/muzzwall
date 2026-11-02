@@ -1,0 +1,10 @@
+# Runtime dependencies (Arch: python-numpy / python-pillow work too)
+numpy>=2.0
+pillow>=10.0
+# Pure-Python D-Bus client used by the XDG portal wallpaper backend.
+jeepney>=0.8
+
+# Optional accelerators. The code detects these at import time and falls back
+# to the pure Pillow/numpy paths when they are absent.
+# opencv-python-headless   # faster smart-mode analysis + OpenCL Sobel/blur
+# PyTurboJPEG              # faster JPEG thumbnail decode for palette extraction

@@ -1,10 +1,12 @@
 # plugins/wallhaven.py
 import json
+import os
 import urllib.request
 import urllib.parse
 import urllib.error
 import time
 from typing import Optional
+from core import state
 from core.wallpaper import WallpaperSource
 from core.cache import CacheManager
 
@@ -28,6 +30,7 @@ class WallhavenSource(WallpaperSource):
         self.history_index = -1
         
         self.image_queue = []
+        self.purity_by_url = {}
         self.current_page = 1
 
     def _fetch_api_batch(self, retries=3):
@@ -52,8 +55,6 @@ class WallhavenSource(WallpaperSource):
 
         for attempt in range(retries):
             try:
-                from core.config import ConfigManager
-                config = ConfigManager.load()
                 from core.proxy_resolver import resolve_proxy_url
                 proxy_url = resolve_proxy_url()
 
@@ -73,8 +74,11 @@ class WallhavenSource(WallpaperSource):
                         
                         # Only keep images that are under our size limit
                         if file_size <= self.max_size_bytes:
-                            self.image_queue.append(item.get("path"))
-                            valid_images_found += 1
+                            path = item.get("path")
+                            if path:
+                                self.image_queue.append(path)
+                                self.purity_by_url[path] = item.get("purity", "sfw")
+                                valid_images_found += 1
                             
                     print(f"Wallhaven API: Fetched {len(data.get('data', []))} items. Kept {valid_images_found} under {self.max_size_bytes / 1024 / 1024:.1f}MB limit.")
                     return # Success, break out of retry loop
@@ -92,6 +96,26 @@ class WallhavenSource(WallpaperSource):
             except Exception as e:
                 print(f"⚠️ Wallhaven API connection error: {e}")
                 time.sleep(2)
+
+    def _remember_purity(self, local_path: str, url: str) -> None:
+        """Persist the API purity so the daemon can weight display time.
+
+        The daemon used to read a ``wallhaven-purity.json`` that nothing in the
+        codebase ever wrote, so every image was silently treated as SFW. The
+        API already returns the field on each search result; record it beside
+        the cached file name at the moment the download succeeds.
+        """
+        purity = self.purity_by_url.pop(url, "sfw")
+        path = state.purity_path()
+        data = state.read_json(path)
+        by_name = data.get("by_name")
+        if not isinstance(by_name, dict):
+            by_name = {}
+        by_name[os.path.basename(local_path)] = purity
+        # Keep the mapping bounded; entries for evicted files are dead weight.
+        if len(by_name) > 2000:
+            by_name = dict(list(by_name.items())[-2000:])
+        state.write_json(path, {"by_name": by_name})
 
     def fetch_next(self, abort_check=None) -> Optional[str]:
         if self.history_index < len(self.history) - 1:
@@ -113,6 +137,7 @@ class WallhavenSource(WallpaperSource):
             local_path = self.cache.download(img_url, abort_check=abort_check)
 
             if local_path:
+                self._remember_purity(local_path, img_url)
                 self.history.append(local_path)
                 if len(self.history) > 50:
                     self.history.pop(0)

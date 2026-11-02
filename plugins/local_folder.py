@@ -1,9 +1,9 @@
 # plugins/local_folder.py
 import os
 import random
-import json
 import time
 from typing import Optional
+from core import state
 from core.wallpaper import WallpaperSource
 from core.imageutil import is_valid_image
 
@@ -14,7 +14,8 @@ class LocalFolderSource(WallpaperSource):
         self.recursive = recursive
         self.persist_history = persist_history
         self.max_history = 50
-        self.history_file = os.path.expanduser("~/.config/muzwall_history.json")
+        self.history_file = state.state_dir() / "local_folder_history.json"
+        self.legacy_history_file = state.config_home() / "muzwall_history.json"
 
         self.history = []
         self.history_index = -1
@@ -30,37 +31,31 @@ class LocalFolderSource(WallpaperSource):
 
     def _load_history(self):
         """Loads persistent history and sequential indices from disk."""
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, "r") as f:
-                    data = json.load(f)
-                    self.history = data.get("history", [])[-self.max_history:]
-                    self.history_index = data.get("history_index", -1)
-                    self.sequential_index = data.get("sequential_index", -1)
+        data = state.read_json(self.history_file, legacy=self.legacy_history_file)
+        if not data:
+            return
+        try:
+            self.history = data.get("history", [])[-self.max_history:]
+            self.history_index = data.get("history_index", -1)
+            self.sequential_index = data.get("sequential_index", -1)
 
-                    if self.history_index >= len(self.history):
-                        self.history_index = len(self.history) - 1
-            except Exception as e:
-                print(f"Failed to load history: {e}")
+            if self.history_index >= len(self.history):
+                self.history_index = len(self.history) - 1
+        except Exception as e:
+            print(f"Failed to load history: {e}")
 
     def _save_history(self):
         """Saves current state via Atomic Write so it survives crashes."""
         if not self.persist_history:
             return
 
-        tmp_file = self.history_file + ".tmp"
-        try:
-            with open(tmp_file, "w") as f:
-                json.dump({
-                    "history": self.history,
-                    "history_index": self.history_index,
-                    "sequential_index": self.sequential_index
-                }, f)
-            os.replace(tmp_file, self.history_file)
-        except Exception as e:
-            print(f"Failed to save history: {e}")
-            if os.path.exists(tmp_file):
-                os.remove(tmp_file)
+        ok = state.write_json(self.history_file, {
+            "history": self.history,
+            "history_index": self.history_index,
+            "sequential_index": self.sequential_index,
+        })
+        if not ok:
+            print(f"Failed to save history: {self.history_file}")
 
     def _get_valid_images(self):
         """Fast cached directory scanning using os.scandir."""

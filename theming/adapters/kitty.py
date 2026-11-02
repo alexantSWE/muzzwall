@@ -1,10 +1,16 @@
 """Generate a Kitty palette without rewriting the user's main kitty.conf."""
 
+import shutil
+
 from core.palette import ThemePalette
 from .common import atomic_write, config_home, run_if_available
 
 
 class KittyAdapter:
+    @classmethod
+    def available(cls) -> bool:
+        return bool(shutil.which("kitty")) or (config_home() / "kitty").is_dir()
+
     @staticmethod
     def render(palette: ThemePalette) -> str:
         colours = palette.ansi

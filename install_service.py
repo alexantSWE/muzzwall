@@ -7,7 +7,10 @@ def install_systemd_service():
     # Get absolute paths
     project_root = os.path.dirname(os.path.abspath(__file__))
     daemon_path = os.path.join(project_root, "daemon.py")
-    python_path = sys.executable
+    # Prefer the project venv: a system interpreter often lacks jeepney/numpy,
+    # and installing packages globally is deliberately not required.
+    venv_python = os.path.join(project_root, ".venv", "bin", "python")
+    python_path = venv_python if os.path.exists(venv_python) else sys.executable
 
     # Ensure daemon is executable
     os.chmod(daemon_path, 0o755)
@@ -41,10 +44,10 @@ def install_systemd_service():
             pass
     if wayland_display:
         display_vars.append(f"Environment=WAYLAND_DISPLAY={wayland_display}")
-        display_vars.append(f"Environment=XDG_SESSION_TYPE=wayland")
+        display_vars.append("Environment=XDG_SESSION_TYPE=wayland")
     else:
-        print("WARNING: no Wayland display found. Noctalia wallpaper calls will")
-        print("         fail from the service until WAYLAND_DISPLAY is set.")
+        print("No Wayland display found; the daemon will recover the session")
+        print("environment from systemd at runtime (portal/Plasma/X11 backends).")
     if os.environ.get("DISPLAY"):
         display_vars.append(f"Environment=DISPLAY={os.environ['DISPLAY']}")
 
@@ -65,11 +68,10 @@ Type=simple
 ExecStart={python_path} {daemon_path}
 WorkingDirectory={project_root}
 Environment=PYTHONUNBUFFERED=1
-# systemd starts user units with a minimal environment. Noctalia names its IPC
-# socket after WAYLAND_DISPLAY (noctalia-wayland-<n>.sock), so without this the
-# daemon's wallpaper calls fail with "noctalia is not running". The setter also
-# re-reads these defensively from `systemctl --user show-environment`, so a
-# stale value here degrades to the runtime lookup rather than breaking rotation.
+# systemd starts user units with a minimal environment. The daemon's backends
+# recover DISPLAY/WAYLAND_DISPLAY/DBUS_SESSION_BUS_ADDRESS from the systemd
+# manager at runtime too, so a stale value here degrades gracefully instead of
+# breaking rotation.
 {chr(10).join(display_vars)}
 Restart=on-failure
 RestartSec=5

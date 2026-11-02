@@ -8,9 +8,11 @@ import time
 from unittest.mock import patch, mock_open, MagicMock
 
 # Import the modules we want to test
-from core.config import ConfigManager, CONFIG_PATH
+from core.config import ConfigManager
 from core.cache import CacheManager
-from core.setter import WallpaperSetter, _session_env, _set_wallpaper_noctalia
+from core import state
+from core.backends import BackendResult, CommandBackend, WallpaperRequest
+from core.setter import WallpaperSetter, _session_env
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
 import cli
@@ -58,44 +60,69 @@ class TestWallpaperSetter(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+        # Keep state writes (current wallpaper/backup) inside the test sandbox.
+        self._state = tempfile.TemporaryDirectory()
+        self.addCleanup(self._state.cleanup)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": self._state.name})
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_hex_to_rgb(self):
         self.assertEqual(WallpaperSetter.hex_to_rgb("#000000"), "0,0,0")
         self.assertEqual(WallpaperSetter.hex_to_rgb("#FFFFFF"), "255,255,255")
 
-    @patch("core.setter._set_wallpaper_noctalia", return_value=True)
+    @patch(
+        "core.setter.apply_wallpaper",
+        return_value=BackendResult(True, "portal", applied=("/fake/path.jpg",)),
+    )
     @patch("os.path.exists", return_value=True)
-    def test_set_wallpaper_uses_noctalia_on_niri(self, _exists, _noctalia):
+    def test_set_wallpaper_applies_through_the_backend_registry(self, _exists, mock_apply):
         result = WallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit")
         self.assertTrue(result)
-        _noctalia.assert_called_once()
+        request = mock_apply.call_args.args[0]
+        self.assertEqual(request.paths, ("/fake/path.jpg",))
+        self.assertEqual(request.modes, ("fit",))
+        self.assertTrue(state.current_path().exists(), "successful apply must be recorded")
+
+    @patch(
+        "core.setter.apply_wallpaper",
+        side_effect=lambda request, **kwargs: BackendResult(
+            True, "plasma", applied=request.paths
+        ),
+    )
+    def test_set_wallpaper_accepts_image_paths_for_multiple_desktops(self, mock_apply):
+        with tempfile.NamedTemporaryFile(suffix=".png") as first, \
+             tempfile.NamedTemporaryFile(suffix=".png") as second:
+            result = WallpaperSetter.set_wallpaper(
+                image_paths=[first.name, second.name], mode="fit"
+            )
+            self.assertTrue(result)
+            request = mock_apply.call_args.args[0]
+            self.assertEqual(request.paths, (first.name, second.name))
+            self.assertEqual(request.modes, ("fit", "fit"))
 
     def test_set_wallpaper_rejects_missing_files(self):
         self.assertFalse(WallpaperSetter.set_wallpaper("/nope/missing.jpg"))
 
-    @patch("shutil.which", return_value=None)
-    def test_set_wallpaper_fails_without_a_compositor_bridge(self, _which):
-        """Neither Plasma nor Noctalia available must fail loudly, not silently."""
-        self.assertFalse(WallpaperSetter.set_wallpaper("/fake/path.jpg", mode="fit"))
+    def test_set_wallpaper_fails_when_no_backend_applies(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as image:
+            with patch(
+                "core.setter.apply_wallpaper",
+                return_value=BackendResult(False, "none", message="nothing works"),
+            ):
+                self.assertFalse(WallpaperSetter.set_wallpaper(image.name, mode="fit"))
 
-    @patch("os.path.exists")
-    @patch("subprocess.run")
-    def test_get_current_wallpaper_from_noctalia(self, mock_subprocess, mock_exists):
-        mock_exists.return_value = True
-        mock_subprocess.return_value = MagicMock(
-            returncode=0, stdout="/home/user/pic.png\n", stderr=""
-        )
-        state = WallpaperSetter.get_current_wallpaper()
-        self.assertEqual(state.get("image"), "/home/user/pic.png")
+    def test_get_current_wallpaper_reads_recorded_state(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as image:
+            state.write_current([image.name], mode="fit", color="#112233")
+            found = WallpaperSetter.get_current_wallpaper()
+        self.assertEqual(found["image"], image.name)
+        self.assertEqual(found["mode"], "fit")
+        self.assertEqual(found["color"], "#112233")
 
-    @patch("os.path.exists")
-    @patch("subprocess.run")
-    def test_get_current_wallpaper_empty_when_bridge_is_silent(self, mock_subprocess, mock_exists):
-        """A bridge that answers with garbage must not be trusted as a path."""
-        mock_exists.return_value = True
-        mock_subprocess.return_value = MagicMock(
-            returncode=0, stdout="error: not running\n", stderr=""
-        )
-        self.assertEqual(WallpaperSetter.get_current_wallpaper(), {})
+    def test_get_current_wallpaper_empty_without_state_or_backends(self):
+        with patch("core.setter.available_backends", return_value=[]):
+            self.assertEqual(WallpaperSetter.get_current_wallpaper(), {})
 
 
 class TestSessionEnv(unittest.TestCase):
@@ -122,7 +149,7 @@ class TestSessionEnv(unittest.TestCase):
              patch("subprocess.run", side_effect=FileNotFoundError("systemctl")):
             self.assertIsInstance(_session_env(), dict)
 
-    def test_noctalia_call_is_given_the_recovered_env(self):
+    def test_command_backend_is_given_the_recovered_env(self):
         """Regression guard: the fix is only real if env= is actually passed."""
         captured = {}
 
@@ -131,22 +158,30 @@ class TestSessionEnv(unittest.TestCase):
                 return MagicMock(returncode=0, stdout="WAYLAND_DISPLAY=wayland-1\n")
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("env")
-            return MagicMock(returncode=0, stdout="ok\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
+        request = WallpaperRequest(
+            paths=("/tmp/pic.jpg",), command="echo {image}"
+        )
         with patch.dict(os.environ, {}, clear=True), \
-             patch("shutil.which", return_value="/usr/bin/noctalia"), \
              patch("subprocess.run", side_effect=fake_run):
-            self.assertTrue(_set_wallpaper_noctalia(["/tmp/pic.jpg"]))
+            result = CommandBackend.apply(request)
 
-        self.assertEqual(captured["cmd"][:3], ["/usr/bin/noctalia", "msg", "wallpaper-set"])
+        self.assertTrue(result.ok)
+        self.assertEqual(captured["cmd"], ["echo", "/tmp/pic.jpg"])
         self.assertEqual(captured["env"].get("WAYLAND_DISPLAY"), "wayland-1")
 
-    def test_noctalia_rejection_is_reported(self):
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("shutil.which", return_value="/usr/bin/noctalia"), \
-             patch("subprocess.run", return_value=MagicMock(
-                 returncode=0, stdout="error: noctalia is not running\n", stderr="")):
-            self.assertFalse(_set_wallpaper_noctalia(["/tmp/pic.jpg"]))
+    def test_command_backend_reports_rejection(self):
+        def fake_run(cmd, **kwargs):
+            if "show-environment" in cmd:
+                return MagicMock(returncode=0, stdout="")
+            return MagicMock(returncode=2, stdout="", stderr="command failed")
+
+        request = WallpaperRequest(paths=("/tmp/pic.jpg",), command="false {image}")
+        with patch("subprocess.run", side_effect=fake_run):
+            result = CommandBackend.apply(request)
+        self.assertFalse(result.ok)
+        self.assertIn("command failed", result.message)
 
 class TestLocalFolderSource(unittest.TestCase):
 
@@ -455,6 +490,17 @@ class TestWallhavenSource(unittest.TestCase):
             source._fetch_api_batch()
         self.assertEqual(source.image_queue, [])
 
+    def test_purity_is_recorded_for_display_timing(self):
+        """The daemon reads this mapping; nothing used to write it."""
+        source = WallhavenSource()
+        source.purity_by_url["https://fake/1.jpg"] = "sketchy"
+        with tempfile.TemporaryDirectory() as cache:
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": cache}):
+                source._remember_purity("/tmp/1-abc.jpg", "https://fake/1.jpg")
+            with open(os.path.join(cache, "wallhaven-purity.json")) as stream:
+                recorded = json.load(stream)
+        self.assertEqual(recorded["by_name"]["1-abc.jpg"], "sketchy")
+
 class TestCLICommands(unittest.TestCase):
 
     @patch("subprocess.run")
@@ -465,18 +511,12 @@ class TestCLICommands(unittest.TestCase):
             check=True, capture_output=True, text=True
         )
 
-    @patch("os.path.exists")
-    @patch("os.remove")
-    @patch("builtins.open", new_callable=mock_open)
-    def test_toggle_pause(self, mock_file, mock_remove, mock_exists):
-        # Test Pause
+    @patch("cli.state.set_paused")
+    def test_toggle_pause(self, mock_set_paused):
         cli.toggle_pause(True)
-        mock_file.assert_called_once()
-        
-        # Test Resume
-        mock_exists.return_value = True
+        mock_set_paused.assert_called_once_with(True)
         cli.toggle_pause(False)
-        mock_remove.assert_called_once()
+        mock_set_paused.assert_called_with(False)
     @patch("cli.ConfigManager.load")
     @patch("cli.ConfigManager.save")
     def test_handle_config_wallhaven(self, mock_save, mock_load):

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import subprocess
-import sys
 import os
 import json
 import time
 from datetime import datetime
+from core import state
 from core.config import ConfigManager
 
 def send_signal_and_wait(signal_name):
     """Sends a signal to the daemon and waits for a response via the status file."""
-    status_path = os.path.expanduser("~/.config/muzwall_status.json")
+    status_path = str(state.status_path())
     
     # Read the old timestamp so we know when it gets updated
     old_ts = 0
@@ -72,8 +72,7 @@ def show_status():
     if result.stdout.strip() == "active": print("✅ Muzwall daemon is running.")
     else: print("❌ Muzwall daemon is NOT running.")
 
-    pause_path = os.path.expanduser("~/.config/muzwall.pause")
-    is_paused = os.path.exists(pause_path)
+    is_paused = state.is_paused()
 
     config = ConfigManager.load()
     if config:
@@ -83,14 +82,16 @@ def show_status():
         unique = config.get("settings", {}).get("unique_wallpapers", False)
         theme_sync = config.get("settings", {}).get("theme_sync", False)
         proxy = config.get("settings", {}).get("proxy", "None")
+        backend_pref = config.get("settings", {}).get("wallpaper_backend", "auto")
         
-        print(f"\n=== Configuration ===")
+        print("\n=== Configuration ===")
         print(f"🔌 Active Plugin : {active_plugin}")
         print(f"⏱️  Interval      : {interval} seconds")
         print(f"🔔 Notifications : {'ON' if notifs else 'OFF'}")
         print(f"🔀 Unique Screens: {'ON' if unique else 'OFF'} (Multi-Monitor/Activity)")
-        print(f"🎨 Theme Sync    : {'ON' if theme_sync else 'OFF'} (niri/kitty/btop/fastfetch)")
+        print(f"🎨 Theme Sync    : {'ON' if theme_sync else 'OFF'} (available apps only)")
         print(f"🌐 Proxy         : {proxy}")
+        print(f"🖼️  Backend       : {backend_pref}")
         print(f"{'⏸️  Rotation      : PAUSED' if is_paused else '▶️  Rotation      : ACTIVE'}")
         
         normalized_plugin = active_plugin.lower().replace("_", "")
@@ -112,22 +113,34 @@ def show_status():
             print(f"🔑 API Key      : {'Set' if wh.get('api_key') else 'Not Set'}")
     persist = config.get("plugins", {}).get("local_folder", {}).get("persist_history", True)
     print(f"💾 Persist History: {'ON' if persist else 'OFF'}")
-    status_path = os.path.expanduser("~/.config/muzwall_status.json")
-    print(f"\n=== Current Wallpaper ===")
-    if os.path.exists(status_path):
-        try:
-            with open(status_path, "r") as f:
-                data = json.load(f)
-                msg = data.get("message", "No message")
-                img = data.get("image", "None")
-                ts = data.get("timestamp", 0)
-                time_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts > 0 else "Unknown"
-                print(f"🖼️  Image  : {img}")
-                print(f"📝 Status : {msg}")
-                print(f"🕒 Time   : {time_str}")
-        except Exception as e: print(f"Could not read status file: {e}")
+    print("\n=== Current Wallpaper ===")
+    data = state.read_status()
+    current = state.read_current()
+    if data or current:
+        msg = data.get("message") or f"Last applied via {current.get('backend', 'unknown')}"
+        img = data.get("image") or current.get("image", "None")
+        ts = data.get("timestamp") or current.get("updated", 0)
+        time_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts > 0 else "Unknown"
+        print(f"🖼️  Image  : {img}")
+        print(f"📝 Status : {msg}")
+        print(f"🕒 Time   : {time_str}")
     else:
         print("No status information available yet.")
+
+    try:
+        from core.backends import backend_report
+
+        settings = config.get("settings", {})
+        report = backend_report(
+            settings.get("wallpaper_backend", "auto"),
+            command_configured=bool(settings.get("wallpaper_command")),
+        )
+        usable = [entry["name"] for entry in report["backends"] if entry.get("available")]
+        print("\n=== Wallpaper Backends ===")
+        print(f"Preferred : {report['preferred']}")
+        print(f"Available : {', '.join(usable) if usable else 'none'}")
+    except Exception as error:
+        print(f"Could not probe wallpaper backends: {error}")
 
 def handle_config(args):
     """Handles updating the config.json file directly from CLI."""
@@ -173,6 +186,38 @@ def handle_config(args):
             config.setdefault("settings", {})["proxy"] = args.proxy
             print(f"✅ Set global proxy to '{args.proxy}'.")
         updated = True
+    if args.backend is not None:
+        config.setdefault("settings", {})["wallpaper_backend"] = args.backend
+        print(f"✅ Set wallpaper backend preference to '{args.backend}'.")
+        updated = True
+    if args.wallpaper_command is not None:
+        if args.wallpaper_command.strip().lower() in ("", "none"):
+            config.setdefault("settings", {}).pop("wallpaper_command", None)
+            print("✅ Cleared wallpaper command.")
+        else:
+            config.setdefault("settings", {})["wallpaper_command"] = args.wallpaper_command
+            print(f"✅ Set wallpaper command to '{args.wallpaper_command}'.")
+        updated = True
+    if args.wallpaper_command_shell is not None:
+        val = args.wallpaper_command_shell.lower() == "true"
+        config.setdefault("settings", {})["wallpaper_command_shell"] = val
+        print(f"✅ Set wallpaper_command_shell to {val}.")
+        updated = True
+    if args.wallpaper_query_command is not None:
+        if args.wallpaper_query_command.strip().lower() in ("", "none"):
+            config.setdefault("settings", {}).pop("wallpaper_query_command", None)
+            print("✅ Cleared wallpaper query command.")
+        else:
+            config.setdefault("settings", {})["wallpaper_query_command"] = args.wallpaper_query_command
+            print(f"✅ Set wallpaper query command to '{args.wallpaper_query_command}'.")
+        updated = True
+    if args.portal_timeout is not None:
+        if args.portal_timeout <= 0:
+            print("❌ portal timeout must be greater than zero.")
+        else:
+            config.setdefault("settings", {})["portal_timeout"] = args.portal_timeout
+            print(f"✅ Set portal timeout to {args.portal_timeout}s.")
+            updated = True
     if args.plugin is not None:
         config["active_plugin"] = args.plugin
         print(f"✅ Set active_plugin to '{args.plugin}'.")
@@ -219,7 +264,7 @@ def handle_config(args):
             updated = True
         if args.wh_apikey is not None:
             wh_cfg["api_key"] = args.wh_apikey
-            print(f"✅ Set Wallhaven API key.")
+            print("✅ Set Wallhaven API key.")
             updated = True
         if args.wh_maxsize is not None:
             wh_cfg["max_size_mb"] = args.wh_maxsize
@@ -231,17 +276,14 @@ def handle_config(args):
 
 def toggle_pause(pause_state: bool):
     """Creates or removes the lock file to pause/resume rotation."""
-    pause_path = os.path.expanduser("~/.config/muzwall.pause")
+    state.set_paused(pause_state)
     if pause_state:
-        open(pause_path, 'w').close()
         print("⏸️  Muzwall auto-rotation paused. (You can still use 'next' and 'prev' manually).")
     else:
-        if os.path.exists(pause_path):
-            os.remove(pause_path)
         print("▶️  Muzwall auto-rotation resumed.")
 
 def install_shortcuts():
-    """Generates desktop entries and prints the niri binds to trigger them."""
+    """Generate desktop entries for next/prev/toggle and print binding hints."""
     import stat
     apps_dir = os.path.expanduser("~/.local/share/applications")
     os.makedirs(apps_dir, exist_ok=True)
@@ -281,8 +323,8 @@ StartupNotify=false
             print(f"❌ Failed to create shortcut {action}: {e}")
             return
             
-    # Refresh the launcher's desktop database so the new entries show up in
-    # Noctalia immediately.
+    # Refresh the launcher's desktop database so the new entries show up
+    # immediately.
     subprocess.run(["update-desktop-database", apps_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("✅ Desktop entries generated successfully!")
@@ -290,15 +332,11 @@ StartupNotify=false
     print(f"   {apps_dir}/muzwall-prev.desktop")
     print(f"   {apps_dir}/muzwall-toggle.desktop")
     print()
-    print("To bind keys in niri, add lines like these to the binds { } block")
-    print("in ~/.config/niri/config.kdl (pick unused combinations):")
-    print("-" * 60)
-    print(f'    Mod+BracketRight {{ spawn "{cli_path}" next; }}')
-    print(f'    Mod+BracketLeft  {{ spawn "{cli_path}" prev; }}')
-    print(f'    Mod+Shift+Slash  {{ spawn "{cli_path}" toggle; }}')
-    print("-" * 60)
-    print("Then run: niri msg action load-config-file")
-    print("(or validate first with: niri validate --config ~/.config/niri/config.kdl)")
+    print("Bind these launchers from your desktop's keyboard settings:")
+    print(f"   {cli_path} next    (next wallpaper)")
+    print(f"   {cli_path} prev    (previous wallpaper)")
+    print(f"   {cli_path} toggle  (pause/resume)")
+    print("The same commands work from any compositor, terminal or hotkey daemon.")
 
 
 def _current_wallpaper_path() -> str | None:
@@ -312,11 +350,6 @@ def _current_wallpaper_path() -> str | None:
     return None
 
 
-def _nightlight_state_path() -> str:
-    base = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    return os.path.join(base, "muzwall", "nightlight", "state.json")
-
-
 def _remember_daytime_wallpaper(path: str, strength: float) -> None:
     """Record which wallpaper --moon replaced, so --day can undo it exactly.
 
@@ -324,37 +357,27 @@ def _remember_daytime_wallpaper(path: str, strength: float) -> None:
     indistinguishable from any other wallpaper, and "newest file in the folder"
     can easily pick a different picture entirely.
     """
-    target = _nightlight_state_path()
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8") as stream:
-        json.dump({"daytime_image": path, "strength": strength}, stream, indent=2)
+    state.write_nightlight({"daytime_image": path, "strength": strength})
 
 
 def _recalled_daytime_wallpaper() -> str | None:
-    try:
-        with open(_nightlight_state_path(), encoding="utf-8") as stream:
-            state = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    image = state.get("daytime_image")
+    state_data = state.read_nightlight()
+    image = state_data.get("daytime_image")
     if image and os.path.isfile(image):
         return image
     return None
 
 
 def _forget_daytime_wallpaper() -> None:
-    try:
-        os.unlink(_nightlight_state_path())
-    except OSError:
-        pass
+    state.clear_nightlight()
 
 
 def _apply_nightlight(strength: float, activate: bool = True) -> dict:
     """Bake a night wallpaper from the current one and resync the palette.
 
     The accent is derived from the daytime image and then rotated toward the
-    night anchor, so niri, kitty and fastfetch all cool down alongside the
-    desktop rather than staying at their daytime values.
+    night anchor, so every available theme consumer cools down alongside the
+    desktop rather than staying at its daytime values.
     """
     from core.nightlight import build_night_variant, night_hue
     from core.palette import ChromaticExtractor, ThemePalette
@@ -522,6 +545,27 @@ def main():
     parser_config.add_argument("--unique", type=str, choices=["true", "false"], help="Enable/disable unique wallpapers for multi-monitor/activities")
     parser_config.add_argument("--persist", type=str, choices=["true", "false"], help="Enable/disable remembering history across reboots")
     parser_config.add_argument("--proxy", type=str, help="Set HTTP/HTTPS proxy (e.g., http://127.0.0.1:10809) or 'none' to clear")
+    parser_config.add_argument(
+        "--backend", type=str,
+        choices=["auto", "portal", "layer-shell", "x11", "plasma", "command"],
+        help="Prefer a wallpaper backend (auto probes portal, layer-shell, X11 and Plasma)",
+    )
+    parser_config.add_argument(
+        "--wallpaper-command", type=str,
+        help="Fallback command template using {image}, {images}, {mode}, {output}; 'none' clears it",
+    )
+    parser_config.add_argument(
+        "--wallpaper-command-shell", type=str, choices=["true", "false"],
+        help="Run wallpaper-command through a shell (only if the template needs it)",
+    )
+    parser_config.add_argument(
+        "--wallpaper-query-command", type=str,
+        help="Command that prints the current wallpaper path (used for first-run backup); 'none' clears it",
+    )
+    parser_config.add_argument(
+        "--portal-timeout", type=float,
+        help="Seconds to wait for the XDG portal to answer a wallpaper request (default 20)",
+    )
     parser_config.add_argument("--theme-sync", type=str, choices=["true", "false"], help="Enable/disable local wallpaper-driven desktop theme synchronization")
     # Wallhaven Plugin Config
     parser_config.add_argument("--wh-query", type=str, help="Wallhaven search query (e.g., 'cyberpunk', 'nature')")
@@ -569,8 +613,7 @@ def main():
     elif args.command == "resume":
         toggle_pause(False)
     elif args.command == "toggle":
-        pause_path = os.path.expanduser("~/.config/muzwall.pause")
-        toggle_pause(not os.path.exists(pause_path))
+        toggle_pause(not state.is_paused())
     elif args.command == "status":
         show_status()
     elif args.command == "config":
@@ -642,7 +685,10 @@ def main():
         print("Muzwall daemon restarted.")
     elif args.command == "logs":
         try:
-            log_file = os.path.expanduser("~/.cache/muzwall/muzwall.log")
+            log_file = str(state.log_path())
+            legacy_log = os.path.expanduser("~/.cache/muzwall/muzwall.log")
+            if not os.path.exists(log_file) and os.path.exists(legacy_log):
+                log_file = legacy_log
             if os.path.exists(log_file):
                 subprocess.run(["tail", "-f", "-n", "50", log_file])
             else:

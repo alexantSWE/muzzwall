@@ -12,8 +12,13 @@ the focus ring, tab indicator, insert hint and switcher highlight, and it
 re-applies live through ``niri msg action load-config-file``.
 """
 
+from __future__ import annotations
+
+import os
+import shutil
+
 from core.palette import ThemePalette
-from .common import atomic_write, config_home, run_if_available
+from .common import atomic_write, config_home, managed_file, run_if_available
 
 
 class NiriAdapter:
@@ -23,6 +28,19 @@ class NiriAdapter:
     # KDL comments start with "//", not "#" -- a '#' would be parsed as an
     # identifier and make the whole config fail to load.
     INCLUDE_MARKER = "// muzwall:theme"
+
+    @classmethod
+    def available(cls) -> bool:
+        """Only touch niri when niri actually exists.
+
+        Previously the orchestrator ran this adapter unconditionally, which
+        created ``~/.config/niri/config.kdl`` on KDE and every other desktop.
+        """
+        if shutil.which("niri") or os.environ.get("NIRI_SOCKET"):
+            return True
+        return managed_file(
+            config_home() / "niri" / "config.kdl", cls.INCLUDE_MARKER
+        )
 
     @staticmethod
     def render(palette: ThemePalette) -> str:
@@ -85,29 +103,35 @@ class NiriAdapter:
 
         if activate:
             config_path = config_dir / "config.kdl"
-            existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-            if cls.INCLUDE_MARKER not in existing:
-                # Repair an earlier bad marker rather than appending a second
-                # include, which would trip niri's duplicate-node checks.
-                lines = [
-                    line for line in existing.splitlines()
-                    if line.strip() not in ('# muzwall:theme', '// muzwall:theme')
-                ]
-                existing = "\n".join(lines).rstrip()
-                existing = (
-                    existing
-                    + f'\n\n{cls.INCLUDE_MARKER}\ninclude "{cls.FILENAME}"\n'
-                )
-                atomic_write(config_path, existing)
-
-            # `niri msg action load-config-file` exits 0 even when the config
-            # fails to parse, so calling it blind reports success while niri
-            # keeps running the previous config. Validate first and refuse to
-            # reload on a bad file, otherwise a malformed fragment would look
-            # applied and the accent would silently stop tracking.
             if not config_path.exists():
-                result["message"] = "config.kdl not found; skipped reload"
+                # Never create a compositor config for a compositor that is not
+                # there. The generated fragment above is inert until the user
+                # opts in by owning a config.kdl.
+                result["message"] = "config.kdl not found; skipped include/reload"
             else:
+                existing = config_path.read_text(encoding="utf-8")
+                include_line = f'include "{cls.FILENAME}"'
+                if cls.INCLUDE_MARKER not in existing or include_line not in existing:
+                    # Repair an earlier bad marker rather than appending a
+                    # second include, which would trip niri's duplicate-node
+                    # checks.
+                    lines = [
+                        line for line in existing.splitlines()
+                        if line.strip() not in ('# muzwall:theme', '// muzwall:theme')
+                    ]
+                    existing = "\n".join(lines).rstrip()
+                    existing = (
+                        existing
+                        + f"\n\n{cls.INCLUDE_MARKER}\n{include_line}\n"
+                    )
+                    atomic_write(config_path, existing)
+
+                # `niri msg action load-config-file` exits 0 even when the
+                # config fails to parse, so calling it blind reports success
+                # while niri keeps running the previous config. Validate first
+                # and refuse to reload on a bad file, otherwise a malformed
+                # fragment would look applied and the accent would silently
+                # stop tracking.
                 valid, detail = run_if_available(
                     ["niri", "validate", "--config", str(config_path)], timeout=20.0
                 )

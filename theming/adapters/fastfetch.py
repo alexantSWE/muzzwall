@@ -12,15 +12,23 @@ palette here rather than emitting a ``swatches`` array.
 from __future__ import annotations
 
 import json
+import shutil
 
 from core.palette import ThemePalette
-from .common import atomic_write, config_home, run_if_available
+from .common import atomic_write, config_home, managed_file, run_if_available
 
 
 class FastfetchAdapter:
     """Render ``~/.config/fastfetch/config.jsonc`` from the palette."""
 
     FILENAME = "config.jsonc"
+    LOGO_FILENAME = "muzwall-cat.asc"
+
+    @classmethod
+    def available(cls) -> bool:
+        return bool(shutil.which("fastfetch")) or managed_file(
+            config_home() / "fastfetch" / cls.FILENAME, cls.LOGO_FILENAME
+        )
 
     # A small cat, curled up. fastfetch substitutes $1..$9 per line when the
     # logo type is "file", so each colour channel below is tinted
@@ -45,7 +53,6 @@ class FastfetchAdapter:
         active = p.accent_active.to_hex()
         primary = p.fg_primary.to_hex()
         muted = p.fg_muted.to_hex()
-        elevated = p.bg_elevated.to_hex()
         subtle = p.border_subtle.to_hex()
 
         return [
@@ -165,7 +172,7 @@ class FastfetchAdapter:
             "$schema": "https://raw.githubusercontent.com/fastfetch-cli/fastfetch/dev/doc/json_schema.json",
             "logo": {
                 "type": cls._logo_type(),
-                "source": cls._write_logo(palette),
+                "source": cls._logo_path(),
                 "color": {
                     "1": palette.accent.to_hex(),
                     "2": palette.accent_hover.to_hex(),
@@ -193,9 +200,17 @@ class FastfetchAdapter:
         return json.dumps(document, indent=4) + "\n"
 
     @staticmethod
+    def _logo_path() -> str:
+        return str(config_home() / "fastfetch" / FastfetchAdapter.LOGO_FILENAME)
+
+    @staticmethod
     def _write_logo(palette: ThemePalette) -> str:
-        """Persist the logo next to the config and return its path."""
-        path = config_home() / "fastfetch" / "muzwall-cat.asc"
+        """Persist the logo next to the config and return its path.
+
+        Kept separate from :meth:`render`: rendering must stay a pure function
+        (tests and dry runs call it), while ``apply`` is allowed to touch disk.
+        """
+        path = config_home() / "fastfetch" / FastfetchAdapter.LOGO_FILENAME
         atomic_write(path, FastfetchAdapter.LOGO + "\n")
         return str(path)
 
@@ -204,6 +219,7 @@ class FastfetchAdapter:
         path = config_home() / "fastfetch" / cls.FILENAME
         result: dict[str, str | bool] = {"artifact": str(path), "activated": False}
 
+        cls._write_logo(palette)
         rendered = cls.render(palette)
         try:
             if path.read_text(encoding="utf-8") == rendered:

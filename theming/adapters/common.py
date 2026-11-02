@@ -16,6 +16,24 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
 
 
+def is_kde_session() -> bool:
+    """Whether the current login session is Plasma, including a systemd unit."""
+    env = get_session_env()
+    markers = " ".join(
+        env.get(key, "")
+        for key in ("XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION")
+    ).lower()
+    return "kde" in markers or "plasma" in markers or bool(env.get("KDE_SESSION_VERSION"))
+
+
+def kwriteconfig_command() -> str | None:
+    return shutil.which("kwriteconfig6") or shutil.which("kwriteconfig5")
+
+
+def qdbus_command() -> str | None:
+    return shutil.which("qdbus6") or shutil.which("qdbus-qt5") or shutil.which("qdbus")
+
+
 def atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
@@ -63,7 +81,17 @@ def get_session_env() -> dict:
         for line in res.stdout.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
-                if k in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"):
+                if k in (
+                    "DISPLAY",
+                    "WAYLAND_DISPLAY",
+                    "XAUTHORITY",
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "XDG_CURRENT_DESKTOP",
+                    "XDG_SESSION_DESKTOP",
+                    "DESKTOP_SESSION",
+                    "KDE_SESSION_VERSION",
+                    "KDE_FULL_SESSION",
+                ):
                     env[k] = v
     except Exception:
         pass
@@ -133,3 +161,17 @@ def run_if_available(command: list[str], *, timeout: float = 5.0) -> tuple[bool,
         return True, result.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as error:
         return False, str(error)
+
+
+def managed_file(path: Path, marker: str) -> bool:
+    """True when *path* already contains Muzwall's marker.
+
+    Adapters use this to keep managing a file they generated earlier even if the
+    corresponding application is not on ``PATH`` right now (for example while it
+    is being upgraded), without creating configs for apps that were never
+    present.
+    """
+    try:
+        return marker in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False

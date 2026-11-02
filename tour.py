@@ -7,7 +7,7 @@ launcher toggles, caffeine, then wrap up and stop recording.
 
 Recording goes to ~/Videos/flex-YYYYmmdd-HHMMSS.mp4 (disable with --no-rec).
 """
-import argparse, os, subprocess, sys, time, signal, datetime
+import argparse, os, subprocess, time, signal, datetime
 
 NI = ["niri", "msg", "action"]
 MZWALL = os.path.expanduser("~/Documents/proj/muzwall/cli.py")

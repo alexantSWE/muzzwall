@@ -11,6 +11,20 @@ from .common import atomic_write, config_home
 
 class GTKAdapter:
     @classmethod
+    def available(cls) -> bool:
+        """GTK apps exist when either GTK config tree is present.
+
+        Writing ``~/.config/gtk-4.0/muzwall.css`` on a machine with no GTK apps
+        would be harmless but pointless clutter, and it is the kind of
+        per-desktop side effect the backend refactor is trying to remove.
+        """
+        home = config_home()
+        return any(
+            (home / version).is_dir()
+            for version in ("gtk-3.0", "gtk-4.0")
+        )
+
+    @classmethod
     def render(cls, palette: ThemePalette) -> str:
         fg = palette.fg_primary.to_hex()
         bg = palette.bg_deep.to_hex()

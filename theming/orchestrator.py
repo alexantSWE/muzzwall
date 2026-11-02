@@ -2,25 +2,30 @@
 
 from __future__ import annotations
 
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from core.palette import ChromaticExtractor, ThemePalette
 from .adapters.btop import BtopAdapter
 from .adapters.fastfetch import FastfetchAdapter
+from .adapters.fonts import FontAdapter
 from .adapters.gtk import GTKAdapter
+from .adapters.kde import KDEColorAdapter
+from .adapters.klassy import KlassyAdapter
 from .adapters.kitty import KittyAdapter
+from .adapters.kwin import KWinPhysicsAdapter
 from .adapters.niri import NiriAdapter
 
 
 class DesktopThemeOrchestrator:
     """The conductor; every adapter is independently replaceable."""
 
-    # Every adapter here writes a file that survives independently of any other
-    # adapter, and every one of them targets the live niri/Noctalia session, so
-    # they all run unconditionally. (Legacy adapter set was removed.)
+    # Every adapter is independently replaceable. Availability is checked at
+    # runtime so Plasma receives its native accent/color scheme updates while
+    # Niri, GTK, Kitty and terminal adapters remain desktop-safe.
     ADAPTERS = (
+        ("kde", KDEColorAdapter),
+        ("klassy", KlassyAdapter),
         ("gtk", GTKAdapter),
         ("kitty", KittyAdapter),
         ("niri", NiriAdapter),
@@ -29,23 +34,46 @@ class DesktopThemeOrchestrator:
     )
 
     @classmethod
-    def _apply_adapters(cls, palette: ThemePalette, activate: bool) -> dict[str, object]:
-        """Apply every consumer concurrently.
+    def _selected(cls) -> tuple[list[tuple[str, object]], list[str]]:
+        selected: list[tuple[str, object]] = []
+        skipped: list[str] = []
+        for name, adapter in cls.ADAPTERS:
+            try:
+                available = bool(adapter.available())
+            except Exception:
+                available = False
+            if available:
+                selected.append((name, adapter))
+            else:
+                skipped.append(name)
+        return selected, skipped
 
-        The adapters own disjoint artifacts (niri theme kdl, fastfetch config and
-        art, gtk css, kitty conf, btop theme) and make independent activation
-        calls, so there is no shared state to serialize. Running them in parallel
-        hides the write + subprocess-spawn latency; the two visual reloads niri
-        needs (config reload and kitty remap) overlap into one beat instead of
-        stacking sequentially.
+    @classmethod
+    def _apply_adapters(cls, palette: ThemePalette, activate: bool) -> dict[str, object]:
+        """Apply every available consumer concurrently.
+
+        Adapters own separate artifacts and can update in parallel. A failed
+        theme adapter is reported without interrupting wallpaper rotation.
+
+        One adapter raising must not take the others down: theming is decorative,
+        wallpaper rotation is the actual job.
         """
-        selected = cls.ADAPTERS
-        with ThreadPoolExecutor(max_workers=len(selected)) as pool:
-            futures = {
-                name: pool.submit(adapter.apply, palette, activate=activate)
-                for name, adapter in selected
-            }
-            return {name: future.result() for name, future in futures.items()}
+        selected, skipped = cls._selected()
+        results: dict[str, object] = {}
+        if selected:
+            with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+                futures = {
+                    name: pool.submit(adapter.apply, palette, activate=activate)
+                    for name, adapter in selected
+                }
+                for name, future in futures.items():
+                    try:
+                        results[name] = future.result()
+                    except Exception as error:
+                        results[name] = {"error": str(error)}
+        if skipped:
+            results["skipped"] = skipped
+        return results
 
     @classmethod
     def palette_for_image(cls, image_path: str, fallback_hue: float = 285.0) -> ThemePalette:
@@ -87,4 +115,12 @@ class DesktopThemeOrchestrator:
         report["took_ms"] = int((time.monotonic() - started) * 1000)
         return report
 
-    # lives in config.kdl, which the NiriAdapter already rewrites.
+    @classmethod
+    def initialize_system(cls, *, activate: bool = True) -> dict[str, object]:
+        """Apply the optional one-time KWin latency/effects and font settings."""
+        if not KDEColorAdapter.available():
+            return {"skipped": "not a supported Plasma session"}
+        return {
+            "kwin": KWinPhysicsAdapter.apply(activate=activate),
+            "fonts": FontAdapter.apply(activate=activate),
+        }

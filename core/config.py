@@ -3,9 +3,25 @@ import json
 import os
 from typing import Dict, Any
 
-# Resolve the absolute path to where this script lives, then go up one directory to find config.json
+# Resolve the absolute path to where this script lives, then go up one directory
+# to find config.json. An explicit MUZWALL_CONFIG wins, and an XDG config file is
+# used when the checkout has none, so a packaged install does not need to write
+# into its (possibly read-only) source tree.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
+
+
+def _default_config_path() -> str:
+    explicit = os.environ.get("MUZWALL_CONFIG", "").strip()
+    if explicit:
+        return os.path.abspath(os.path.expanduser(explicit))
+    project = os.path.join(PROJECT_ROOT, "config.json")
+    if os.path.exists(project):
+        return project
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "muzwall", "config.json")
+
+
+CONFIG_PATH = _default_config_path()
 
 class ConfigManager:
     @staticmethod

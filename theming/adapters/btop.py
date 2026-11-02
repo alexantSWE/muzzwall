@@ -10,15 +10,23 @@ a wallpaper change takes effect the next time the task manager is opened.
 """
 
 import re
+import shutil
 
 from core.palette import ThemePalette
-from .common import atomic_write, config_home, run_if_available
+from .common import atomic_write, config_home, managed_file, run_if_available
 
 THEME_NAME = "muzwall"
 THEME_FILE = f"{THEME_NAME}.theme"
 
 
 class BtopAdapter:
+    @classmethod
+    def available(cls) -> bool:
+        config_dir = config_home() / "btop"
+        return bool(shutil.which("btop")) or managed_file(
+            config_dir / "btop.conf", f'color_theme = "{THEME_NAME}"'
+        )
+
     @staticmethod
     def render(palette: ThemePalette) -> str:
         a = palette.ansi

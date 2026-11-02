@@ -1,11 +1,11 @@
 """Nightlight wallpaper variants.
 
 Gives the desktop a proper day/night cycle driven by the same muzwall pipeline
-that already handles the accent colour. Instead of asking Noctalia to tint the
-screen (which only dims output and leaves the wallpaper itself unchanged), we
-bake a genuinely darker, cooler image and set *that* as the wallpaper. The
-accent then derives from the night image, so the whole palette -- niri focus
-ring, kitty cursor, fastfetch -- shifts with the time of day on its own.
+that already handles the accent colour. Instead of asking a desktop shell to
+tint the screen (which often only dims output and leaves the wallpaper itself
+unchanged), we bake a genuinely darker, cooler image and set *that* as the
+wallpaper. The accent then derives from the night image, so the whole palette
+shifts with the time of day on its own.
 
 The result is cached under the XDG cache dir keyed by source mtime, size and
 strength, so re-deriving the same night wallpaper every rotation is free.
