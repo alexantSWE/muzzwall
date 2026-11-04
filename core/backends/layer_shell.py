@@ -20,6 +20,12 @@ import time
 from .base import WallpaperBackend, WallpaperRequest, result
 
 _SWAYBG_MODES = {"fill", "fit", "stretch", "center", "tile"}
+_SWWW_RESIZE = {
+    "fill": "crop",
+    "fit": "fit",
+    "stretch": "stretch",
+    "center": "no",
+}
 
 
 def _session_env() -> dict:
@@ -94,6 +100,8 @@ class LayerShellBackend(WallpaperBackend):
                 message="layer-shell backend does not map separate images to outputs",
             )
 
+        if request.mode == "tile" and shutil.which("swaybg"):
+            return cls._apply_swaybg(request)
         if shutil.which("swww"):
             return cls._apply_swww(request)
         if shutil.which("swaybg"):
@@ -104,6 +112,13 @@ class LayerShellBackend(WallpaperBackend):
 
     @classmethod
     def _apply_swww(cls, request: WallpaperRequest) -> result:
+        resize = _SWWW_RESIZE.get(request.mode)
+        if resize is None:
+            return result(
+                False,
+                cls.name,
+                message=f"swww does not support the {request.mode!r} scaling mode",
+            )
         if not cls._ensure_swww():
             return result(
                 False,
@@ -111,9 +126,11 @@ class LayerShellBackend(WallpaperBackend):
                 message="swww-daemon did not start",
             )
 
-        ok, message = cls._run(
-            ["swww", "img", request.path, "--transition-type", "none"]
-        )
+        command = ["swww", "img", request.path, "--resize", resize]
+        if resize == "no":
+            command.extend(("--fill-color", request.border_color.lstrip("#")))
+        command.extend(("--transition-type", "none"))
+        ok, message = cls._run(command)
         if not ok:
             return result(False, cls.name, message=message)
         return result(True, cls.name, applied=(request.path,))
@@ -169,6 +186,8 @@ class LayerShellBackend(WallpaperBackend):
         if mode not in _SWAYBG_MODES:
             mode = "fill"
         command = ["swaybg", "-i", request.path, "-m", mode]
+        if request.border_color:
+            command.extend(("-c", request.border_color))
         try:
             process = subprocess.Popen(
                 command,

@@ -117,6 +117,20 @@ def backend_chain(
     ):
         chain.remove(PlasmaBackend)
         chain.insert(0, PlasmaBackend)
+    elif request is not None and not preference:
+        # The wallpaper portal accepts a file and target (background/lockscreen)
+        # but has no scaling or padding-color options. Prefer a capable native
+        # backend when the request actually asks for those controls.
+        needs_styling = (
+            any(mode != "fill" for mode in request.modes)
+            or any(color.lower() != "#000000" for color in request.colors)
+        )
+        if needs_styling:
+            for backend in (PlasmaBackend, LayerShellBackend, X11Backend):
+                if backend in chain:
+                    chain.remove(backend)
+                    chain.insert(0, backend)
+                    break
     return chain
 
 

@@ -151,6 +151,15 @@ def _wait_seconds(settings: dict, filename: str, interval: int) -> int:
         return interval
 
 
+def _rotation_interval(settings: dict) -> int:
+    """Return a safe positive rotation interval from user-edited config."""
+    try:
+        return max(1, int(settings.get("interval_seconds", 60)))
+    except (TypeError, ValueError, OverflowError):
+        print("Invalid interval_seconds; using the 60 second default.")
+        return 60
+
+
 def _notify(message: str, image: str) -> None:
     if not image or not os.path.isfile(image):
         return
@@ -202,7 +211,7 @@ def main():
                 continue
 
             settings = config.get("settings", {})
-            interval = settings.get("interval_seconds", 60)
+            interval = _rotation_interval(settings)
             scale_mode = settings.get("scale_mode", "fit")
             border_color = settings.get("border_color", "#000000")
             theme_sync = settings.get("theme_sync", False)

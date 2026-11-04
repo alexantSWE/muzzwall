@@ -150,9 +150,12 @@ def handle_config(args):
     updated = False
     
     if args.interval is not None:
-        config.setdefault("settings", {})["interval_seconds"] = args.interval
-        print(f"✅ Set interval to {args.interval} seconds.")
-        updated = True
+        if args.interval <= 0:
+            print("❌ interval must be greater than zero; configuration was not changed.")
+        else:
+            config.setdefault("settings", {})["interval_seconds"] = args.interval
+            print(f"✅ Set interval to {args.interval} seconds.")
+            updated = True
     if args.mode is not None:
         config.setdefault("settings", {})["scale_mode"] = args.mode
         print(f"✅ Set scale_mode to '{args.mode}'.")
@@ -516,6 +519,15 @@ def _watch_wallpaper_theme(activate: bool = True, interval: float = 5.0) -> None
 
 
 def main():
+    def positive_interval(value):
+        try:
+            interval = int(value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError("interval must be an integer") from error
+        if interval <= 0:
+            raise argparse.ArgumentTypeError("interval must be greater than zero")
+        return interval
+
     parser = argparse.ArgumentParser(description="Muzwall CLI - Control the background daemon")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -534,7 +546,7 @@ def main():
 
     # Configuration Control
     parser_config = subparsers.add_parser("config", help="View or modify daemon configuration")
-    parser_config.add_argument("--interval", type=int, help="Set rotation interval in seconds")
+    parser_config.add_argument("--interval", type=positive_interval, help="Set rotation interval in seconds")
     parser_config.add_argument("--folder", type=str, help="Set local folder path")
     parser_config.add_argument("--order", type=str, choices=["random", "sequential"], help="Set rotation order")
     parser_config.add_argument("--mode", type=str, choices=["fill", "fit", "stretch", "center", "tile", "smart"], help="Set wallpaper scaling mode")

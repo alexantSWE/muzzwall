@@ -16,6 +16,7 @@ from core.setter import WallpaperSetter, _session_env
 from plugins.local_folder import LocalFolderSource
 from plugins.wallhaven import WallhavenSource
 import cli
+import daemon
 
 class TestConfigManager(unittest.TestCase):
 
@@ -182,6 +183,16 @@ class TestSessionEnv(unittest.TestCase):
             result = CommandBackend.apply(request)
         self.assertFalse(result.ok)
         self.assertIn("command failed", result.message)
+
+
+class TestDaemonIntervals(unittest.TestCase):
+    def test_nonpositive_and_malformed_intervals_are_safe(self):
+        self.assertEqual(daemon._rotation_interval({"interval_seconds": 0}), 1)
+        self.assertEqual(daemon._rotation_interval({"interval_seconds": -10}), 1)
+        self.assertEqual(daemon._rotation_interval({"interval_seconds": "bad"}), 60)
+
+    def test_positive_interval_is_preserved(self):
+        self.assertEqual(daemon._rotation_interval({"interval_seconds": "900"}), 900)
 
 class TestLocalFolderSource(unittest.TestCase):
 
@@ -517,6 +528,14 @@ class TestCLICommands(unittest.TestCase):
         mock_set_paused.assert_called_once_with(True)
         cli.toggle_pause(False)
         mock_set_paused.assert_called_with(False)
+
+    def test_cli_rejects_nonpositive_rotation_interval(self):
+        for interval in ("0", "-5"):
+            with self.subTest(interval=interval), \
+                 patch.object(sys, "argv", ["muzwall", "config", "--interval", interval]), \
+                 self.assertRaises(SystemExit):
+                cli.main()
+
     @patch("cli.ConfigManager.load")
     @patch("cli.ConfigManager.save")
     def test_handle_config_wallhaven(self, mock_save, mock_load):

@@ -6,7 +6,13 @@ import unittest
 from unittest.mock import patch
 
 from core import state
-from core.backends import BackendResult, CommandBackend, PlasmaBackend, WallpaperRequest
+from core.backends import (
+    BackendResult,
+    CommandBackend,
+    LayerShellBackend,
+    PlasmaBackend,
+    WallpaperRequest,
+)
 from core.backends.registry import (
     apply_wallpaper,
     backend_chain,
@@ -52,6 +58,28 @@ class TestRegistry(unittest.TestCase):
              patch("core.backends.plasma.PlasmaBackend.available", return_value=True):
             names = [backend.name for backend in backend_chain(request)]
         self.assertEqual(names[0], "plasma")
+
+    def test_styled_requests_prefer_a_backend_that_honors_mode_and_color(self):
+        request = WallpaperRequest(
+            paths=("/tmp/a.png",), modes=("fit",), colors=("#123456",)
+        )
+        with patch("core.backends.portal.PortalBackend.available", return_value=True), \
+             patch("core.backends.layer_shell.LayerShellBackend.available", return_value=True), \
+             patch("core.backends.x11.X11Backend.available", return_value=True), \
+             patch("core.backends.plasma.PlasmaBackend.available", return_value=True):
+            names = [backend.name for backend in backend_chain(request)]
+        self.assertEqual(names[0], "plasma")
+
+    def test_explicit_portal_preference_is_preserved_for_styled_requests(self):
+        request = WallpaperRequest(
+            paths=("/tmp/a.png",), modes=("fit",), colors=("#123456",)
+        )
+        with patch("core.backends.portal.PortalBackend.available", return_value=True), \
+             patch("core.backends.layer_shell.LayerShellBackend.available", return_value=True), \
+             patch("core.backends.x11.X11Backend.available", return_value=True), \
+             patch("core.backends.plasma.PlasmaBackend.available", return_value=True):
+            names = [backend.name for backend in backend_chain(request, preferred="portal")]
+        self.assertEqual(names[0], "portal")
 
     def test_plasma_assigns_each_path_mode_and_color(self):
         request = WallpaperRequest(
@@ -136,6 +164,52 @@ class TestCommandBackend(unittest.TestCase):
         outcome = CommandBackend.apply(WallpaperRequest(paths=("/tmp/a.png",)))
         self.assertFalse(outcome.ok)
         self.assertIn("wallpaper_command", outcome.message)
+
+
+class TestLayerShellStyling(unittest.TestCase):
+    def test_swww_receives_requested_scaling(self):
+        request = WallpaperRequest(
+            paths=("/tmp/a.png",), modes=("stretch",), colors=("#123456",)
+        )
+        with patch.object(LayerShellBackend, "_ensure_swww", return_value=True), \
+             patch.object(LayerShellBackend, "_run", return_value=(True, "")) as run:
+            outcome = LayerShellBackend._apply_swww(request)
+
+        self.assertTrue(outcome.ok)
+        argv = run.call_args.args[0]
+        self.assertIn(("--resize", "stretch"), list(zip(argv, argv[1:])))
+
+    def test_swww_center_uses_requested_fill_color(self):
+        request = WallpaperRequest(
+            paths=("/tmp/a.png",), modes=("center",), colors=("#123456",)
+        )
+        with patch.object(LayerShellBackend, "_ensure_swww", return_value=True), \
+             patch.object(LayerShellBackend, "_run", return_value=(True, "")) as run:
+            outcome = LayerShellBackend._apply_swww(request)
+
+        self.assertTrue(outcome.ok)
+        argv = run.call_args.args[0]
+        self.assertIn(("--fill-color", "123456"), list(zip(argv, argv[1:])))
+
+    def test_tile_uses_swaybg_and_passes_border_color(self):
+        request = WallpaperRequest(
+            paths=("/tmp/a.png",), modes=("tile",), colors=("#123456",)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = os.path.join(directory, "swaybg.pid")
+            process = type("Process", (), {"pid": 1234, "poll": lambda self: None})()
+            with patch("core.backends.layer_shell.shutil.which", side_effect=lambda name: "/usr/bin/swaybg" if name == "swaybg" else None), \
+                 patch("core.backends.layer_shell._state_path", return_value=pid_file), \
+                 patch.object(LayerShellBackend, "_foreign_swaybg_running", return_value=False), \
+                 patch("core.backends.layer_shell.subprocess.Popen", return_value=process) as popen, \
+                 patch("core.backends.layer_shell.time.sleep"), \
+                 patch("core.backends.layer_shell._session_env", return_value={}):
+                outcome = LayerShellBackend.apply(request)
+
+        self.assertTrue(outcome.ok)
+        argv = popen.call_args.args[0]
+        self.assertIn(("-c", "#123456"), list(zip(argv, argv[1:])))
+        self.assertIn(("-m", "tile"), list(zip(argv, argv[1:])))
 
 
 class TestState(unittest.TestCase):
