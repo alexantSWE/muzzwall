@@ -18,6 +18,7 @@ import os
 import shutil
 
 from core.palette import ThemePalette
+
 from .common import atomic_write, config_home, managed_file, run_if_available
 
 
@@ -38,9 +39,7 @@ class NiriAdapter:
         """
         if shutil.which("niri") or os.environ.get("NIRI_SOCKET"):
             return True
-        return managed_file(
-            config_home() / "niri" / "config.kdl", cls.INCLUDE_MARKER
-        )
+        return managed_file(config_home() / "niri" / "config.kdl", cls.INCLUDE_MARKER)
 
     @staticmethod
     def render(palette: ThemePalette) -> str:
@@ -87,7 +86,9 @@ class NiriAdapter:
         return "\n".join(lines) + "\n"
 
     @classmethod
-    def apply(cls, palette: ThemePalette, activate: bool = True) -> dict[str, str | bool]:
+    def apply(
+        cls, palette: ThemePalette, activate: bool = True
+    ) -> dict[str, str | bool]:
         config_dir = config_home() / "niri"
         path = config_dir / cls.FILENAME
         result: dict[str, str | bool] = {"artifact": str(path), "activated": False}
@@ -116,14 +117,12 @@ class NiriAdapter:
                     # second include, which would trip niri's duplicate-node
                     # checks.
                     lines = [
-                        line for line in existing.splitlines()
-                        if line.strip() not in ('# muzwall:theme', '// muzwall:theme')
+                        line
+                        for line in existing.splitlines()
+                        if line.strip() not in ("# muzwall:theme", "// muzwall:theme")
                     ]
                     existing = "\n".join(lines).rstrip()
-                    existing = (
-                        existing
-                        + f"\n\n{cls.INCLUDE_MARKER}\n{include_line}\n"
-                    )
+                    existing = existing + f"\n\n{cls.INCLUDE_MARKER}\n{include_line}\n"
                     atomic_write(config_path, existing)
 
                 # `niri msg action load-config-file` exits 0 even when the

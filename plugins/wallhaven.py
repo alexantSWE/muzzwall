@@ -19,7 +19,7 @@ class WallhavenSource(WallpaperSource):
         self.api_key = api_key
         
         # Convert MB to Bytes for easy comparison with the API response
-        self.max_size_bytes = max_size_mb * 1024 * 1024 
+        self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         
         # The API's `file_size` is only a hint and the CDN's Content-Length can
         # disagree with it, so the cache enforces the same ceiling against bytes

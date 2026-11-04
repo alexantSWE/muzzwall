@@ -20,7 +20,7 @@ import os
 import shlex
 import subprocess
 
-from .base import WallpaperBackend, WallpaperRequest, result
+from .base import BackendResult, WallpaperBackend, WallpaperRequest, result
 
 
 def _session_env() -> dict:
@@ -42,7 +42,7 @@ class CommandBackend(WallpaperBackend):
         return True
 
     @classmethod
-    def apply(cls, request: WallpaperRequest) -> result:
+    def apply(cls, request: WallpaperRequest) -> BackendResult:
         template = (request.command or "").strip()
         if not template:
             return result(

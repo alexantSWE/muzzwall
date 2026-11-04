@@ -3,6 +3,7 @@
 import shutil
 
 from core.palette import OKLCH, ThemePalette
+
 from .common import (
     atomic_write,
     config_home,
@@ -139,10 +140,13 @@ inactiveForeground={rgb(palette.fg_muted)}
         return f"{cls.scheme_name}_{name}"
 
     @classmethod
-    def apply(cls, palette: ThemePalette, activate: bool = True) -> dict[str, str | bool]:
+    def apply(
+        cls, palette: ThemePalette, activate: bool = True
+    ) -> dict[str, str | bool]:
         color_dir = data_home() / "color-schemes"
         rendered = {
-            suffix: cls.render(palette, f"{cls.scheme_name}_{suffix}") for suffix in ("A", "B")
+            suffix: cls.render(palette, f"{cls.scheme_name}_{suffix}")
+            for suffix in ("A", "B")
         }
 
         # If both variants are already on disk and identical, nothing changed:
@@ -152,7 +156,9 @@ inactiveForeground={rgb(palette.fg_muted)}
         for suffix, content in rendered.items():
             path = color_dir / f"{cls.scheme_name}_{suffix}.colors"
             try:
-                all_present = all_present and path.read_text(encoding="utf-8") == content
+                all_present = (
+                    all_present and path.read_text(encoding="utf-8") == content
+                )
             except OSError:
                 all_present = False
         if all_present:
@@ -177,21 +183,39 @@ inactiveForeground={rgb(palette.fg_muted)}
             # Write the accent into kdeglobals BEFORE applying the scheme so
             # Plasma 6 re-reads it as part of the reload. Without this the
             # accent stays stale in the running session until logout.
-            accent_ok, accent_message = run_if_available([
-                kwriteconfig_command(), "--file", "kdeglobals", "--group", "General",
-                "--key", "AccentColor", palette.accent.to_kde_rgb()
-            ])
+            accent_ok, accent_message = run_if_available(
+                [
+                    kwriteconfig_command(),
+                    "--file",
+                    "kdeglobals",
+                    "--group",
+                    "General",
+                    "--key",
+                    "AccentColor",
+                    palette.accent.to_kde_rgb(),
+                ]
+            )
             # Native wallpaper accent extraction would otherwise fight the
             # palette chosen by Muzwall on the next Plasma refresh.
-            run_if_available([
-                kwriteconfig_command(), "--file", "kdeglobals", "--group", "General",
-                "--key", "accentColorFromWallpaper", "false"
-            ])
+            run_if_available(
+                [
+                    kwriteconfig_command(),
+                    "--file",
+                    "kdeglobals",
+                    "--group",
+                    "General",
+                    "--key",
+                    "accentColorFromWallpaper",
+                    "false",
+                ]
+            )
             ok, message = run_if_available(["plasma-apply-colorscheme", scheme_name])
-            result.update({
-                "activated": ok,
-                "message": message,
-                "accent_updated": accent_ok,
-                "accent_message": accent_message,
-            })
+            result.update(
+                {
+                    "activated": ok,
+                    "message": message,
+                    "accent_updated": accent_ok,
+                    "accent_message": accent_message,
+                }
+            )
         return result

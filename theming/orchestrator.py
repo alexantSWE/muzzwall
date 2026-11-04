@@ -6,13 +6,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from core.palette import ChromaticExtractor, ThemePalette
+
 from .adapters.btop import BtopAdapter
 from .adapters.fastfetch import FastfetchAdapter
 from .adapters.fonts import FontAdapter
 from .adapters.gtk import GTKAdapter
 from .adapters.kde import KDEColorAdapter
-from .adapters.klassy import KlassyAdapter
 from .adapters.kitty import KittyAdapter
+from .adapters.klassy import KlassyAdapter
 from .adapters.kwin import KWinPhysicsAdapter
 from .adapters.niri import NiriAdapter
 
@@ -49,7 +50,9 @@ class DesktopThemeOrchestrator:
         return selected, skipped
 
     @classmethod
-    def _apply_adapters(cls, palette: ThemePalette, activate: bool) -> dict[str, object]:
+    def _apply_adapters(
+        cls, palette: ThemePalette, activate: bool
+    ) -> dict[str, object]:
         """Apply every available consumer concurrently.
 
         Adapters own separate artifacts and can update in parallel. A failed
@@ -76,7 +79,9 @@ class DesktopThemeOrchestrator:
         return results
 
     @classmethod
-    def palette_for_image(cls, image_path: str, fallback_hue: float = 285.0) -> ThemePalette:
+    def palette_for_image(
+        cls, image_path: str, fallback_hue: float = 285.0
+    ) -> ThemePalette:
         hue = ChromaticExtractor.extract_hue(image_path, fallback=fallback_hue)
         return ThemePalette(hue)
 

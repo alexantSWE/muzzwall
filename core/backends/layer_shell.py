@@ -17,7 +17,7 @@ import signal
 import subprocess
 import time
 
-from .base import WallpaperBackend, WallpaperRequest, result
+from .base import BackendResult, WallpaperBackend, WallpaperRequest, result
 
 _SWAYBG_MODES = {"fill", "fit", "stretch", "center", "tile"}
 _SWWW_RESIZE = {
@@ -90,7 +90,7 @@ class LayerShellBackend(WallpaperBackend):
         return {}
 
     @classmethod
-    def apply(cls, request: WallpaperRequest) -> result:
+    def apply(cls, request: WallpaperRequest) -> BackendResult:
         if not request.path:
             return result(False, cls.name, message="no wallpaper path")
         if len(request.paths) > 1:
@@ -111,7 +111,7 @@ class LayerShellBackend(WallpaperBackend):
     # -- swww (client/server, no process takeover needed) -----------------
 
     @classmethod
-    def _apply_swww(cls, request: WallpaperRequest) -> result:
+    def _apply_swww(cls, request: WallpaperRequest) -> BackendResult:
         resize = _SWWW_RESIZE.get(request.mode)
         if resize is None:
             return result(
@@ -163,7 +163,7 @@ class LayerShellBackend(WallpaperBackend):
     # -- swaybg (one managed process) -------------------------------------
 
     @classmethod
-    def _apply_swaybg(cls, request: WallpaperRequest) -> result:
+    def _apply_swaybg(cls, request: WallpaperRequest) -> BackendResult:
         pid_file = _state_path("swaybg.pid")
         owned = cls._read_pid(pid_file)
 
