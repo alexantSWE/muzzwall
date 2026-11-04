@@ -1,10 +1,10 @@
 # Muzwall
 
-Muzwall changes your desktop wallpaper on a timer, it can pick pictures from a folder on your computer or find and download them from Wallhaven, and it chooses a wallpaper tool that looks like it belongs to your desktop so you do not have to keep setting that up yourself, and if theme sync is turned on it can also make some of your desktop and app colors follow the picture.
+Muzwall rotates your desktop wallpaper from a local picture folder or Wallhaven. It can also create a color theme from the current picture, and it can make a darker night version and restore the daytime picture later.
 
-## Getting it running
+## Start here
 
-Install the Python packages from this project, and then either start the daemon in your terminal or install it as a user service which makes it start in the background and after login too:
+Create a Python environment, install the requirements, then start the daemon in the terminal:
 
 ```bash
 python -m venv .venv
@@ -12,61 +12,129 @@ python -m venv .venv
 .venv/bin/python daemon.py
 ```
 
-Or, to have systemd keep it running for you, run this instead of the last command:
+To run it as a background user service that starts after login, install it with:
 
 ```bash
 .venv/bin/python install_service.py
 ```
 
-The main settings live in `config.json`, and `MUZWALL_CONFIG` can point to a different file if you want to keep another setup around, and you can ask what Muzwall is doing with `python cli.py status` or look at the changing log with `python cli.py logs`.
+The settings are in `config.json`. The default source is a local folder, so set `plugins.local_folder.path` to your wallpaper folder if it is different from the one already there. Check the current status with `python cli.py status`.
 
-## Wallpapers and rotation
-
-The `active_plugin` setting picks `local_folder` or `wallhaven`, and for the local folder you set `plugins.local_folder.path` to where your pictures live, `order` can be `random` or `sequential`, `recursive` lets it look into folders inside that folder, and `persist_history` remembers the order and previous pictures across daemon restarts so the back button can still work.
-
-The usual `settings` options are what makes the rotation act differently, and most can also be changed with `python cli.py config`:
-
-- `interval_seconds` is how many seconds to show each wallpaper, so `1800` means about half an hour, and it must be greater than zero.
-- `scale_mode` can be `fill`, `fit`, `stretch`, `center`, `tile`, or `smart`, where smart looks at the image and screen shape and tries to choose a sensible one.
-- `border_color` can be a hex color like `#203040`, `dynamic` to pick a color from the image, or `blur` to fill empty space with a blurred copy of the picture.
-- `show_notifications` shows a desktop note after the wallpaper changes, and `theme_sync` updates the supported local theme files from the new picture as well.
-- `unique_wallpapers` asks for different pictures for different screens or desktops when the selected wallpaper backend can assign them separately, which works best with Plasma or an X11 setup using feh.
-- `wallpaper_backend` is normally `auto`, which tries the backends available in your session, or you can ask for `portal`, `layer-shell`, `x11`, `plasma`, or the `command` fallback yourself.
-- `wallpaper_command` can hold a command for a wallpaper tool that Muzwall does not know directly, using placeholders such as `{image}`, `{images}`, and `{mode}`; shell mode is off by default so the template is run as arguments.
-
-For example, this changes the folder, rotates every half hour, scans inside folders, and uses smart scaling with a color chosen from each picture:
+## Everyday controls
 
 ```bash
-python cli.py config --folder ~/Pictures/Wallpapers --interval 1800 --recursive true --mode smart --border dynamic
+python cli.py next       # show the next picture
+python cli.py prev       # return to the previous picture
+python cli.py pause      # pause automatic rotation
+python cli.py resume     # resume automatic rotation
+python cli.py toggle     # switch between paused and running
+python cli.py logs       # follow the daemon log
 ```
 
-The other everyday controls are `python cli.py next`, `python cli.py prev`, `python cli.py pause`, `python cli.py resume`, and `python cli.py toggle`, and pause only stops automatic rotation so you can still use next and previous by hand.
+Pausing only stops automatic changes, so `next` and `prev` still work while paused. Service controls are `python cli.py start`, `stop`, and `restart`.
 
-## Wallhaven
+## Main settings
 
-For online wallpapers set `active_plugin` to `wallhaven` and edit the `plugins.wallhaven` section in `config.json`, where `query` is the search words, `categories` selects General/Anime/People, `sorting` can be random or a sort such as latest or toplist, and `max_size_mb` limits how large an image Muzwall will download. Put your own API key in `api_key` when the Wallhaven search settings need one and keep the config file private, because the key is a secret and does not belong in screenshots or shared copies of the file.
+| Setting | What it does |
+| --- | --- |
+| `interval_seconds` | Seconds to show a wallpaper before rotating. For example, `1800` is 30 minutes. Values must be positive. |
+| `scale_mode` | How to fit the picture: `fill`, `fit`, `stretch`, `center`, `tile`, or `smart`. Smart mode chooses based on the picture and screen shape. |
+| `border_color` | A hex color such as `#203040`, `dynamic` to use a color from the picture, or `blur` to fill empty space with a blurred copy. |
+| `show_notifications` | Show a desktop notification after a wallpaper changes. |
+| `theme_sync` | Update supported desktop and app colors from each new wallpaper. |
+| `unique_wallpapers` | Use a different picture for each screen or desktop when the selected wallpaper backend supports it. |
 
-The `purity` option controls which results are allowed, and `settings.purity_multipliers` can make some kinds stay on screen longer, so the usual `sfw: 1`, `sketchy: 2`, and `nsfw: 3` values mean a sketchy picture stays twice the normal interval and an NSFW picture stays three times as long, and those labels come from Wallhaven result data rather than from Muzwall guessing by looking at the image.
+Most settings can be changed with `python cli.py config`. For example, this uses a local folder, scans subfolders, and rotates every 30 minutes:
 
-You can change the online settings from the command line too, for example `python cli.py config --wh-query nature --wh-purity 100 --wh-sorting latest --wh-maxsize 10`, and `--proxy none` clears a saved proxy if you want Wallhaven to connect directly.
+```bash
+python cli.py config --folder ~/Pictures/Wallpapers --recursive true --interval 1800 --mode smart --border dynamic
+```
 
-## Theme sync and night wallpaper
+For the local folder source, Muzwall reads JPG, PNG, WebP, and BMP pictures, `order` can be `random` or `sequential`, `persist_history` remembers the previous and next pictures across restarts, and `recursive` includes pictures inside subfolders. These are in `plugins.local_folder`; the command options are `--order random|sequential`, `--persist true|false`, and `--recursive true|false`.
 
-When theme sync is on Muzwall checks which theme adapters make sense on this computer and writes the palette for those that are available, which can include the KDE Plasma color scheme, Klassy window borders and decorations, GTK 3 and GTK 4 color tokens, Kitty terminal colors, Niri focus rings and tab highlights, Fastfetch text colors and its little cat, and the btop terminal monitor theme, and it skips apps that are not installed or do not have a suitable config rather than making every app setting appear out of nowhere. Some apps pick up their new colors after reload or when next opened, and each app decides how much of the generated colors it uses.
+## Theme support
 
-You can make a theme from one local picture or set a hue by hand, and `--no-activate` writes the theme files without asking running apps to reload them:
+When `theme_sync` is enabled, Muzwall checks what is available and updates the matching parts of these apps:
+
+- **KDE Plasma:** desktop color scheme and accent colors.
+- **Klassy:** window borders and decoration colors, when the Klassy decoration plugin is installed.
+- **GTK 3 and GTK 4 apps:** shared color tokens used by many GTK applications.
+- **Kitty:** terminal background, text, cursor, selection, and ANSI colors.
+- **Niri:** focus rings, tab indicators, insert hints, and window switcher highlights.
+- **Fastfetch:** terminal output colors and the Muzwall cat logo.
+- **btop:** the terminal monitor's colors and graphs.
+
+Apps use these theme files in different ways, and some apply changes after a reload or when opened again. Muzwall skips adapters that are not available on the system. To create a theme from a picture by hand, or set its color hue directly, use:
 
 ```bash
 python cli.py theme --sync ~/Pictures/Wallpapers/example.jpg
-python cli.py theme --hue 210 --no-activate
+python cli.py theme --hue 210
 ```
 
-The optional nightlight command makes a darker, cooler copy of the current wallpaper and moves the theme colors toward night too, then `--day` restores the daytime picture that was there before:
+Nightlight creates a darker, cooler copy of the current wallpaper and adjusts the theme colors too. `--day` restores the picture that was active before nightlight:
 
 ```bash
-python cli.py theme --moon
-python cli.py theme --moon 0.8
+python cli.py theme --moon       # default strength: 0.65
+python cli.py theme --moon 0.8   # strength can be from 0 to 1
 python cli.py theme --day
 ```
 
-Nightlight strength goes from `0` to `1`, with `0.65` used when no number is given, and ImageMagick needs to be installed for it to create the picture.
+Nightlight needs ImageMagick (`magick` or `convert`). Add `--no-activate` to a theme command to write theme files without asking running apps to reload.
+
+For other theme actions, `python cli.py theme --accent-hex` prints the accent color for the current wallpaper, and `python cli.py theme --watch` watches for changes made outside Muzwall and resyncs the theme when it sees one.
+
+<details>
+<summary>Wallhaven source and purity timing</summary>
+
+To use online pictures, set `active_plugin` to `wallhaven` and edit `plugins.wallhaven` in `config.json`:
+
+```bash
+python cli.py config --plugin wallhaven --wh-query nature --wh-purity 100
+```
+
+| Option | Meaning |
+| --- | --- |
+| `query` | Search words, such as `nature` or `space`. |
+| `categories` | Which categories to search. `111` includes General, Anime, and People. |
+| `purity` | Which content ratings are allowed. `100` is SFW, `110` is SFW plus sketchy, and `001` is NSFW. |
+| `sorting` | `random`, `latest`, `toplist`, or `views`. |
+| `max_size_mb` | Maximum size for each downloaded image. |
+| `api_key` | Your Wallhaven key; required for NSFW searches. Keep it private. |
+
+The purity labels returned by Wallhaven can change display time through `settings.purity_multipliers`. The usual values are `sfw: 1`, `sketchy: 2`, and `nsfw: 3`, which means a sketchy result stays twice as long as the normal interval and an NSFW result stays three times as long. Muzwall uses Wallhaven's result label for this; it does not decide the rating by inspecting the picture.
+
+These options can also be set with `python cli.py config --wh-query nature --wh-categories 111 --wh-purity 100 --wh-sorting latest --wh-maxsize 10`. Use `--wh-apikey YOUR_KEY` to set a key from the command line, or `--proxy none` to clear a configured proxy and connect directly.
+
+</details>
+
+<details>
+<summary>Advanced wallpaper backends and custom commands</summary>
+
+`wallpaper_backend` is normally `auto`, which tries the backends available in the current desktop session and falls back if one fails. You can prefer `portal`, `layer-shell`, `x11`, or `plasma`; `command` runs a user-supplied wallpaper command. `python cli.py status` shows which backends are available.
+
+Set `wallpaper_command` to a command template if your desktop uses a tool Muzwall does not call directly. The supported placeholders are:
+
+- `{image}` — the first wallpaper path.
+- `{images}` — all selected wallpaper paths, for tools that support multiple screens.
+- `{mode}` — the requested scaling mode.
+
+For example, a swaybg command can be configured as `swaybg -i {image} -m {mode}`. Shell execution is off by default; set `wallpaper_command_shell` to `true` only when the command needs shell features. Use `--wallpaper-command none` to clear the custom command.
+
+The portal backend has a timeout controlled by `portal_timeout`. `wallpaper_query_command` can be set when Muzwall needs a custom command to find the wallpaper that was active before it started, so it can restore it on shutdown.
+
+The `proxy` setting accepts a proxy address or `none`. Advanced `proxy_autodetect` can scan common local proxy ports, and `proxy_probe` can be enabled to check whether a candidate proxy connects before using it. Autodetection and probing are off unless you enable them.
+
+Smart scaling and blur borders need display dimensions for their image work. Muzwall tries to read the active display size, and `MUZWALL_DISPLAY_SIZE=2560x1440` can supply it manually if the desktop tools do not report it.
+
+</details>
+
+<details>
+<summary>Theme files and technical notes</summary>
+
+Theme adapters write files under the normal XDG config and data folders. For example, GTK gets generated color tokens, Kitty gets a separate palette file that it can include, Niri gets a separate theme fragment, Fastfetch gets its generated config and logo, and btop gets a theme file plus the setting that selects it. Muzwall avoids changing each app in the same way because their theme support is different, and a theme may only color some parts of an app.
+
+`MUZWALL_CONFIG` can point to a config file other than the project `config.json`. Runtime state and logs use the XDG state folder, theme config uses the XDG config folder, and generated nightlight files use the XDG cache folder. Wallhaven downloads are stored in `~/.cache/muzwall`.
+
+For development, install `requirements-dev.txt` and run the local suite with `python -m pytest -q`.
+
+</details>
